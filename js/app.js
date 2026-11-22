@@ -842,7 +842,7 @@
         return x >= 0 ? `rgba(31,122,63,${0.12 + x * 0.45})` : `rgba(192,57,43,${0.12 - x * 0.4})`;
       };
       return `<div class="table-wrap"><table class="heat mini"><thead><tr><th>自分の重み ＼ 基準EV</th>${E.map((e) => `<th class="num">${e.toFixed(2)}</th>`).join('')}</tr></thead><tbody>
-        ${W.map((w) => `<tr><th>${w * 100}%${w === 0 ? '（オッズのみ）' : ''}</th>${E.map((e) => {
+        ${W.map((w) => `<tr><th>${w * 100}%${w === 0 ? '（オッズのみ＝控除率の分だけ常にEV<1）' : ''}</th>${E.map((e) => {
           const g = cell(w, e);
           const isBest = best && best.weight === w && Math.abs(best.minEv - e) < 1e-9;
           return `<td class="cell ${isBest ? 'best' : ''}" style="background:${color(g.roi)}">${pctOr(g.roi, 0)}<small>${g.bets}点・${g.hits}的中</small></td>`;
