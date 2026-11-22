@@ -17,7 +17,7 @@
     draft: {
       date: today(), venue: '東京', race: 11, name: '',
       weight: 50, temp: 10, minev: 110, comboType: 'quinella', comboSort: 'p',
-      raceId: '', comboOdds: {},
+      raceId: '', comboOdds: {}, horseInfo: {}, trend: null,
       horses: [],
     },
   });
@@ -90,6 +90,7 @@
     [['p-weight', 'weight'], ['p-temp', 'temp'], ['p-minev', 'minev']].forEach(([id, k]) => {
       $(id).addEventListener('input', (e) => { d()[k] = Number(e.target.value); save(); renderAnalysis(); });
     });
+    $('p-ability').addEventListener('click', applyAbility);
     $('p-add').addEventListener('click', () => {
       const next = d().horses.reduce((m, h) => Math.max(m, Number(h.no) || 0), 0) + 1;
       d().horses.push({ no: next, name: '', odds: '', score: 50 });
@@ -174,18 +175,119 @@
     renderHorses();
   }
 
+  function starsHtml(n) {
+    if (!n) return '<span class="hint" title="過去走なし">-</span>';
+    return `<span class="stars">${'★'.repeat(n)}<span class="off">${'★'.repeat(5 - n)}</span></span>`;
+  }
+  function recentHtml(list) {
+    if (!list || !list.length) return '<span class="hint">初出走</span>';
+    return `<span class="recent">${list.map((p) => (p == null ? '止' : p <= 3 ? `<b>${p}</b>` : p)).join('-')}</span>`;
+  }
+  /** 過去10年の枠別3着内率から、その枠が有利(good)/不利(bad)か */
+  function wakuClass(w) {
+    const t = d().trend && d().trend.trend;
+    if (!t || !w) return '';
+    const all = Object.values(t.waku).filter((v) => v.runs);
+    const avg = all.reduce((a, v) => a + v.top3, 0) / all.reduce((a, v) => a + v.runs, 0);
+    const r = t.waku[w];
+    if (!r || r.runs < 5) return '';
+    return r.rate >= avg * 1.35 ? 'good' : r.rate <= avg * 0.65 ? 'bad' : '';
+  }
+  function styleClass(style) {
+    const t = d().trend && d().trend.trend;
+    if (!t || !t.bestStyle || !style) return '';
+    return t.bestStyle.startsWith(style[0]) ? 'style-good' : '';
+  }
+
   function renderHorses() {
-    const rows = d().horses.map((h, i) => `
+    const info = d().horseInfo || {};
+    const rows = d().horses.map((h, i) => {
+      const x = info[h.no] || {};
+      const tip = (x.runs || []).map((r) => `${r.date} ${r.venue} ${r.race}(${r.class}) ${r.surface}${r.distance || ''} ${r.place ?? '中止'}着 ${r.margin != null ? r.margin + '秒差' : ''}`).join('\n');
+      return `
       <tr data-i="${i}">
         <td><input type="number" data-f="no" value="${esc(h.no)}" min="1" max="18" /></td>
+        <td>${x.waku ? `<span class="waku ${wakuClass(x.waku)}" title="過去10年の傾向で色付け">${x.waku}</span>` : ''}</td>
         <td><input type="text" data-f="name" value="${esc(h.name)}" placeholder="馬名" /></td>
+        <td title="${esc(tip)}">${x.rating !== undefined ? starsHtml(x.stars) + (x.rating ? `<span class="rating">${x.rating}</span>` : '') : ''}</td>
+        <td title="${esc(tip)}">${x.rating !== undefined ? recentHtml(x.recent) : ''}</td>
+        <td class="${styleClass(x.style)}">${esc(x.style || '')}</td>
         <td><input type="number" data-f="odds" value="${esc(h.odds)}" step="0.1" min="1" placeholder="例 5.4" /></td>
         <td><div class="marks">${MARKS.map(([m, v]) => `<button class="btn mark ${h.score === v ? 'on' : ''}" data-v="${v}" title="スコア${v}">${m}</button>`).join('')}</div></td>
         <td><input type="number" data-f="score" value="${esc(h.score)}" min="0" max="100" /></td>
         <td><button class="btn small ghost" data-act="del" title="削除">✕</button></td>
-      </tr>`).join('');
-    $('p-horses').innerHTML = rows || '<tr><td colspan="6" class="empty">「＋ 馬を追加」か「一括入力」で出走馬を登録</td></tr>';
+      </tr>`;
+    }).join('');
+    $('p-horses').innerHTML = rows || '<tr><td colspan="10" class="empty">「＋ 馬を追加」か「一括入力」、またはオッズ自動取得で出走馬を登録</td></tr>';
     renderAnalysis();
+  }
+
+  /** 能力値 → スコア(0〜100)。メンバー内の偏差で換算 */
+  function applyAbility() {
+    const info = d().horseInfo || {};
+    const vals = d().horses.map((h) => (info[h.no] || {}).rating).filter((v) => v != null);
+    if (vals.length < 2) { toast('先にオッズ取得で能力値を読み込んでください'); return; }
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length) || 1;
+    d().horses.forEach((h) => {
+      const r = (info[h.no] || {}).rating;
+      h.score = r == null ? 45 : Math.round(Math.max(10, Math.min(95, 50 + ((r - mean) / sd) * 15)));
+    });
+    save(); renderHorses();
+    toast('能力値をスコアに反映しました（印で微調整できます）');
+  }
+
+  // ---------- レース傾向 ----------
+  function renderTrend() {
+    const box = $('t-body');
+    const data = d().trend;
+    if (!data || data.race_id !== d().raceId) { $('t-mode').textContent = ''; return; }
+    const t = data.trend;
+    $('t-mode').textContent = data.mode === 'same_race'
+      ? `${data.name} 過去${t ? t.count : 0}回`
+      : `同時期・同コース（${data.venue}${data.course}）過去${t ? t.count : 0}レース`;
+    if (!t) { box.innerHTML = '<p class="empty">過去のデータが見つかりませんでした</p>'; return; }
+    const fav = t.favorite;
+    const favN = fav.reduce((a, b) => a + b, 0);
+    const favTop3 = favN ? (fav[0] + fav[1] + fav[2]) / favN : 0;
+    const longshots = t.pops['10番人気〜'];
+    const notes = [];
+    if (favN) notes.push(favTop3 >= 0.7 ? `1番人気は堅実（3着内 ${fav[0] + fav[1] + fav[2]}/${favN}回）。軸にしやすい` :
+      favTop3 < 0.4 ? `1番人気の信頼度は低め（3着内 ${fav[0] + fav[1] + fav[2]}/${favN}回）。人気馬を疑う価値あり` :
+      `1番人気の3着内は ${fav[0] + fav[1] + fav[2]}/${favN}回で平均的`);
+    if (longshots && longshots.top3) notes.push(`10番人気以下の馬が3着以内に ${longshots.top3}回 入っている`);
+    if (t.inoutBias !== '互角') notes.push(`${t.inoutBias}（馬番の前半/後半で3着内率 ${pct(t.inout['内'].rate || 0)} / ${pct(t.inout['外'].rate || 0)}）`);
+    if (t.bestStyle) notes.push(`脚質は「${t.bestStyle}」の3着内率が最も高い（${pct(t.styles[t.bestStyle].rate)}）`);
+
+    const bars = (obj, keys, label) => {
+      const max = Math.max(0.01, ...keys.map((k) => (obj[k] && obj[k].rate) || 0));
+      return `<table class="mini"><thead><tr><th>${label}</th><th class="num">3着内</th><th class="num">率</th><th></th></tr></thead><tbody>${keys.map((k) => {
+        const v = obj[k] || { runs: 0, top3: 0, rate: null };
+        return `<tr><td>${esc(k)}</td><td class="num">${v.top3}/${v.runs}</td><td class="num">${v.rate == null ? '-' : pct(v.rate, 0)}</td>
+          <td><div class="bar"><span style="width:${((v.rate || 0) / max) * 100}%"></span></div></td></tr>`;
+      }).join('')}</tbody></table>`;
+    };
+    const kpi = (label, value, sub) => `<div class="kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || ''}</div></div>`;
+    box.innerHTML = `
+      <div class="kpis">
+        ${kpi('荒れ度', t.roughStars ? starsHtml(t.roughStars) : '-', t.medianTan3 ? `3連単の中央値 ${yen(t.medianTan3)}` : '')}
+        ${kpi('1番人気の成績', fav.join('-'), `[1着-2着-3着-着外]　3着内率 ${pct(favTop3, 0)}`)}
+        ${kpi('勝ち馬の平均人気', t.winnerPopAvg ? t.winnerPopAvg + '番人気' : '-', t.medianUmaren ? `馬連の中央値 ${yen(t.medianUmaren)}` : '')}
+        ${kpi('枠順・脚質', `${t.inoutBias}`, t.bestStyle ? `有利な脚質: ${t.bestStyle}` : '')}
+      </div>
+      <ul class="insights">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+      <div class="trend-grid">
+        <div><h3>枠番別</h3>${bars(t.waku, ['1', '2', '3', '4', '5', '6', '7', '8'], '枠')}</div>
+        <div><h3>脚質別</h3>${bars(t.styles, ['逃げ', '先行', '差し', '追込'], '脚質')}
+             <h3 style="margin-top:10px">馬番 内/外</h3>${bars(t.inout, ['内', '外'], '')}</div>
+        <div><h3>人気別</h3>${bars(t.pops, ['1番人気', '2〜3番人気', '4〜6番人気', '7〜9番人気', '10番人気〜'], '人気')}</div>
+      </div>
+      <details><summary>年ごとの結果</summary><div class="table-wrap"><table class="mini">
+        <thead><tr><th>年</th><th>競馬場</th><th>レース</th><th>勝ち馬</th><th class="num">人気</th><th class="num">枠</th><th>脚質</th><th class="num">馬連</th><th class="num">3連単</th></tr></thead>
+        <tbody>${t.years.map((y) => `<tr><td>${y.year}</td><td>${esc(y.venue)}</td><td>${esc(y.name)}</td><td>${esc(y.winner)}</td>
+          <td class="num">${y.winnerPop ?? '-'}</td><td class="num">${y.winnerWaku ?? '-'}</td><td>${esc(y.winnerStyle || '')}</td>
+          <td class="num">${y.umaren ? yen(y.umaren) : '-'}</td><td class="num">${y.tan3 ? yen(y.tan3) : '-'}</td></tr>`).join('')}</tbody>
+      </table></div></details>`;
   }
 
   function renderAnalysis() {
@@ -525,13 +627,14 @@
     function init() {
       $('f-date').value = d().date || today();
       if (location.protocol === 'file:') {
-        ['f-list', 'f-fetch', 'f-race', 'f-auto'].forEach((id) => { $(id).disabled = true; });
+        ['f-list', 'f-fetch', 'f-race', 'f-auto', 't-load'].forEach((id) => { $(id).disabled = true; });
         $('f-hint').innerHTML = '自動取得を使うには、ターミナルで <code>python3 server.py</code> を実行し <b>http://localhost:8765</b> を開いてください。';
         return;
       }
       api('/api/ping').then((r) => status(r.provider === 'MockProvider' ? 'モックデータで接続中' : '接続OK', 'ok'))
         .catch(() => status('サーバーに接続できません', 'err'));
       $('f-list').addEventListener('click', listRaces);
+      $('t-load').addEventListener('click', trend);
       $('f-fetch').addEventListener('click', () => win(true));
       $('f-auto').addEventListener('change', (e) => {
         clearInterval(timer);
@@ -561,7 +664,7 @@
       try {
         const r = await api(`/api/odds?race_id=${rid}&type=win`);
         const prev = new Map(d().horses.map((h) => [Number(h.no), h]));
-        if (rid !== d().raceId) { d().comboOdds = {}; prev.clear(); }
+        if (rid !== d().raceId) { d().comboOdds = {}; d().horseInfo = {}; d().trend = null; prev.clear(); }
         d().horses = r.horses.filter((h) => h.odds).map((h) => ({
           no: h.no,
           name: h.name || (prev.get(h.no) || {}).name || '',
@@ -573,7 +676,7 @@
         $('p-venue').value = r.venue; $('p-race').value = r.race; $('p-name').value = d().name; $('p-date').value = d().date;
         save(); renderHorses();
         status(`単勝 ${r.updated || ''} 時点${scratched.length ? ` / 取消・オッズなし: ${scratched.join(',')}番` : ''}`, 'ok');
-        if (manual) combos(true);
+        if (manual) { combos(true); horses().then(() => trend()); }
       } catch (e) { status('取得失敗: ' + e.message, 'err'); }
     }
 
@@ -589,12 +692,32 @@
         if (d().comboType === type) renderAnalysis();
       } catch (e) { status(`${COMBO_TO_BET[type]}オッズの取得失敗: ${e.message}`, 'err'); }
     }
-    return { init, combos };
+    async function horses() {
+      const rid = d().raceId; if (!rid) return;
+      try {
+        const r = await api(`/api/horses?race_id=${rid}&date=${(d().date || today()).replace(/-/g, "")}`);
+        d().horseInfo = Object.fromEntries(r.horses.map((h) => [h.no, h]));
+        save(); renderHorses();
+      } catch (e) { status('能力値の取得失敗: ' + e.message, 'err'); }
+    }
+    async function trend() {
+      const rid = d().raceId;
+      if (!rid) { toast('先にレースを選んでオッズ取得してください'); return; }
+      $('t-load').disabled = true;
+      $('t-body').innerHTML = '<p class="hint">過去10年分を集計中…（初回は1分ほどかかります。2回目以降はすぐ表示されます）</p>';
+      try {
+        d().trend = await api(`/api/trend?race_id=${rid}&date=${(d().date || today()).replace(/-/g, "")}`);
+        save(); renderTrend(); renderHorses();
+      } catch (e) { $('t-body').innerHTML = `<p class="empty">傾向の取得失敗: ${esc(e.message)}</p>`; }
+      $('t-load').disabled = false;
+    }
+    return { init, combos, horses, trend };
   })();
 
   // ---------- 起動 ----------
   initPredict();
   Fetch.init();
+  renderTrend();
   initLog();
   initSettings();
   renderLog();

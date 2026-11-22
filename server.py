@@ -27,6 +27,10 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+import hashlib
+from datetime import date as _date
+
+import analysis as A
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -80,11 +84,18 @@ class NetkeibaProvider:
         self._cache = {}
 
     # ---- HTTP ----
-    def _get(self, url, ttl):
+    CACHE_DIR = os.path.join(ROOT, ".cache")
+
+    def _get(self, url, ttl, persist=False):
+        """persist=True: 過去レースなど内容が変わらないページはディスクに保存し、二度と取りに行かない"""
         now = time.time()
         hit = self._cache.get(url)
         if hit and now - hit[0] < ttl:
             return hit[1]
+        path = os.path.join(self.CACHE_DIR, hashlib.sha1(url.encode()).hexdigest() + ".html")
+        if persist and os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read()
         with self._lock:
             wait = self.MIN_INTERVAL - (time.time() - self._last)
             if wait > 0:
@@ -100,12 +111,40 @@ class NetkeibaProvider:
                 self._last = time.time()
         text = decode(raw)
         self._cache[url] = (time.time(), text)
+        if persist:
+            os.makedirs(self.CACHE_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
         return text
 
     # ---- レース一覧 ----
     def races(self, date):
-        html = self._get(f"{self.BASE}/top/race_list_sub.html?kaisai_date={date}", ttl=600)
+        past = date < _date.today().strftime("%Y%m%d")
+        html = self._get(f"{self.BASE}/top/race_list_sub.html?kaisai_date={date}", ttl=600, persist=past)
         return parse_race_list(html)
+
+    def race_info(self, race_id, date):
+        for r in self.races(date):
+            if r["race_id"] == race_id:
+                return r
+        raise ValueError("指定日のレース一覧にこのレースが見つかりません（開催日を確認してください）")
+
+    # ---- 能力値（近5走）----
+    def horses(self, race_id, date):
+        info = self.race_info(race_id, date)
+        html = self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800)
+        past = A.parse_past5(html)
+        return {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
+
+    # ---- レース傾向（過去10年）----
+    def trend(self, race_id, date):
+        info = self.race_info(race_id, date)
+        found = A.find_past_races(info, A.parse_date(date), self.races)
+        results = []
+        for r in found["races"]:
+            html = self._get(f"{self.BASE}/race/result.html?race_id={r['race_id']}", ttl=86400, persist=True)
+            results.append({**r, "result": A.parse_result(html)})
+        return {**info, "mode": found["mode"], "trend": A.aggregate_trend(results)}
 
     # ---- オッズ ----
     def odds(self, race_id, kind):
@@ -146,7 +185,19 @@ def parse_race_list(html):
         if not name_m:
             continue
         seen.add(rid)
-        races.append({**parse_race_id(rid), "name": strip_tags(name_m.group(1))})
+        body = m.group(2)
+        course = re.search(r"(芝|ダ|障)\s*(\d{3,4})m", strip_tags(body))
+        field = re.search(r"(\d+)頭", strip_tags(body))
+        grade = re.search(r'ItemTitle.*?Icon_GradeType(\d+)', body, re.S)
+        races.append({
+            **parse_race_id(rid),
+            "name": strip_tags(name_m.group(1)),
+            "course": f"{course.group(1)}{course.group(2)}m" if course else "",
+            "surface": course.group(1) if course else "",
+            "distance": int(course.group(2)) if course else None,
+            "field": int(field.group(1)) if field else None,
+            "grade": {"1": "G1", "2": "G2", "3": "G3"}.get(grade.group(1), "") if grade else "",
+        })
     races.sort(key=lambda r: (r["venue"], r["race"]))
     return races
 
@@ -247,6 +298,48 @@ class MockProvider:
         s = sum(p)
         return [x / s for x in p]
 
+    def _info(self, race_id):
+        r = int(race_id[-2:])
+        return {**parse_race_id(race_id), "name": "モック特別" if r == 11 else f"{r}R 一般",
+                "course": "芝1600m", "surface": "芝", "distance": 1600, "field": len(self._probs(race_id)), "grade": ""}
+
+    def horses(self, race_id, date):
+        info = self._info(race_id)
+        p = self._probs(race_id)
+        rng = random.Random(race_id + "past")
+        past = {}
+        n = len(p)
+        for i in range(n):
+            runs = []
+            for k in range(rng.randint(0, 5)):
+                place = max(1, min(16, int(rng.gauss(8 - p[i] * 40, 3))))
+                runs.append({"date": f"2026-{10 - k:02d}-01", "venue": "東京", "race": "モック", "class": rng.choice(["2勝", "3勝", "OP"]),
+                             "place": place, "surface": rng.choice(["芝", "芝", "ダ"]), "distance": rng.choice([1400, 1600, 1800]),
+                             "field": 16, "pop": place, "margin": round(0 if place == 1 else place * 0.12, 1), "last3f": 34.5,
+                             "style": rng.choice(["逃げ", "先行", "差し", "追込"])})
+            past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs}
+        return {**info, "horses": A.horses_report(past, "芝", 1600)}
+
+    def trend(self, race_id, date):
+        info = self._info(race_id)
+        rng = random.Random(race_id + "trend")
+        results = []
+        for k in range(1, 11):
+            n = rng.randint(12, 18)
+            pops = list(range(1, n + 1))
+            rng.shuffle(pops)
+            order = sorted(range(n), key=lambda i: pops[i] + rng.gauss(0, 4))
+            rows = []
+            for place, i in enumerate(order, 1):
+                rows.append({"place": place, "waku": min(8, i * 8 // n + 1), "no": i + 1, "pop": pops[i], "odds": None,
+                             "firstCorner": rng.randint(1, n), "name": f"過去馬{k}-{i + 1}"})
+            for r in rows:
+                r["style"] = A.running_style(r["firstCorner"], n)
+            results.append({"year": 2026 - k, "venue": info["venue"], "name": info["name"],
+                            "result": {"rows": rows, "field": n, "payout": {"Tan3": rng.choice([3000, 12000, 45000, 98000, 230000]),
+                                                                           "Umaren": rng.choice([600, 1800, 5200])}}})
+        return {**info, "mode": "same_race", "trend": A.aggregate_trend(results)}
+
     def odds(self, race_id, kind):
         info = parse_race_id(race_id)
         p = self._probs(race_id)
@@ -322,6 +415,13 @@ def make_handler(provider):
                     if not re.fullmatch(r"\d{8}", date):
                         return self._json(400, {"error": "date は YYYYMMDD 形式"})
                     return self._json(200, {"races": provider.races(date)})
+                if url.path in ("/api/horses", "/api/trend"):
+                    date = q.get("date", "")
+                    if not re.fullmatch(r"\d{8}", date):
+                        return self._json(400, {"error": "date は YYYYMMDD 形式"})
+                    parse_race_id(q.get("race_id", ""))
+                    fn = provider.horses if url.path == "/api/horses" else provider.trend
+                    return self._json(200, fn(q["race_id"], date))
                 if url.path == "/api/odds":
                     kind = q.get("type", "win")
                     if kind != "win" and kind not in COMBO_TYPES:

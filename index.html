@@ -35,6 +35,14 @@
         <p class="hint" id="f-hint">出走馬・単勝オッズを取り込みます。入力済みの印・スコアは馬番で引き継ぎます。組み合わせ馬券のオッズは券種タブを選ぶと取得します。</p>
       </div>
 
+      <div class="card" id="t-card">
+        <div class="card-head">
+          <h2>レース傾向 <span class="sub" id="t-mode"></span></h2>
+          <button id="t-load" class="btn">傾向を分析</button>
+        </div>
+        <div id="t-body"><p class="hint">オッズ取得したレースの過去10年の結果から、荒れやすさ・枠順・脚質の傾向を表示します（初回は集計に1分ほどかかります）。</p></div>
+      </div>
+
       <div class="card">
         <h2>レース情報</h2>
         <div class="grid-4">
@@ -49,15 +57,17 @@
         <div class="card-head">
           <h2>出走馬と評価</h2>
           <div class="btn-row">
+            <button id="p-ability" class="btn">能力値をスコアに反映</button>
             <button id="p-add" class="btn">＋ 馬を追加</button>
             <button id="p-paste" class="btn">一括入力</button>
             <button id="p-clear" class="btn ghost">クリア</button>
           </div>
         </div>
-        <p class="hint">単勝オッズと、あなたの評価（印 or スコア0〜100）を入力。印を押すとスコアが入ります。</p>
+        <p class="hint">単勝オッズと、あなたの評価（印 or スコア0〜100）を入力。印を押すとスコアが入ります。
+          能力★は近5走の着差とクラスから算出した、このレース内での相対評価です（★5＝メンバー上位）。</p>
         <div class="table-wrap">
           <table class="horses">
-            <thead><tr><th>馬番</th><th>馬名</th><th>単勝オッズ</th><th>印</th><th>スコア</th><th></th></tr></thead>
+            <thead><tr><th>馬番</th><th>枠</th><th>馬名</th><th>能力</th><th>近走</th><th>脚質</th><th>単勝オッズ</th><th>印</th><th>スコア</th><th></th></tr></thead>
             <tbody id="p-horses"></tbody>
           </table>
         </div>

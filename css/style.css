@@ -101,7 +101,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.memo { white-space: normal; min-width: 120px; color: var(--muted); }
 table.horses input { width: 100%; }
 table.horses td:nth-child(1) input { width: 52px; }
-table.horses td:nth-child(3) input, table.horses td:nth-child(5) input { width: 72px; }
+table.horses td:nth-child(7) input, table.horses td:nth-child(9) input { width: 72px; }
+table.horses td:nth-child(3) input { min-width: 110px; }
 .marks { display: flex; gap: 2px; }
 .mark { width: 26px; height: 26px; padding: 0; border-radius: 50%; font-size: 13px; }
 .mark.on { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -144,3 +145,21 @@ tr.buy { background: var(--accent-soft); }
 .fetch-row label.check { flex-direction: row; align-items: center; gap: 4px; padding-bottom: 6px; }
 .badge.ok { color: var(--pos); }
 .badge.err { color: var(--neg); }
+.card h2 .sub { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.stars { color: #d9a400; letter-spacing: -1px; white-space: nowrap; }
+.stars .off { color: var(--border); }
+.rating { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.recent { font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+.recent b { color: var(--pos); }
+.waku { display: inline-block; min-width: 20px; text-align: center; border-radius: 4px; font-size: 12px; padding: 0 3px; border: 1px solid var(--border); }
+.waku.good { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.waku.bad { opacity: .55; }
+.style-good { color: var(--accent); font-weight: 700; }
+.insights { margin: 10px 0 4px; padding-left: 18px; }
+.insights li { margin: 2px 0; }
+.trend-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 10px; }
+@media (max-width: 760px) { .trend-grid { grid-template-columns: 1fr; } }
+.trend-grid h3 { font-size: 13px; margin: 0 0 6px; }
+.mini td, .mini th { padding: 3px 6px; }
+.mini .bar { min-width: 50px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 10px; }
