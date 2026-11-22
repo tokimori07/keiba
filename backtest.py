@@ -82,7 +82,11 @@ def collect(provider, d_from, d_to, scope, progress=None, cancelled=lambda: Fals
             return []
         if progress:
             progress(0, 0, f"レース一覧を確認中 {d.isoformat()}（{i + 1}/{len(dates)}日）")
-        for r in provider.races(d.strftime("%Y%m%d")):
+        try:
+            day = provider.races(d.strftime("%Y%m%d"))
+        except Exception:  # 取得できない日は飛ばす（再実行すれば保存済みの続きから取り直す）
+            continue
+        for r in day:
             if in_scope(r, scope):
                 targets.append((d, r))
     races = []

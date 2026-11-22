@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import webbrowser
 import gzip
@@ -111,11 +112,21 @@ class NetkeibaProvider:
                 "User-Agent": "Mozilla/5.0 (personal keiba-note)",
                 "Accept-Language": "ja",
             })
-            try:
-                with urllib.request.urlopen(req, timeout=15) as res:
-                    raw = res.read()
-            finally:
-                self._last = time.time()
+            raw = None
+            for attempt in range(4):  # 一時的な切断・タイムアウトは待ってやり直す（5秒→15秒→45秒）
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as res:
+                        raw = res.read()
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code < 500 or attempt == 3:
+                        raise
+                except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+                    if attempt == 3:
+                        raise
+                finally:
+                    self._last = time.time()
+                time.sleep(5 * 3 ** attempt)
         text = decode(raw)
         if persist:
             # 保存するページはメモリには置かない（大量に取得してもメモリを食わない）。圧縮して保存
