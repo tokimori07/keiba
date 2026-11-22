@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>競馬ノート</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>競馬ノート</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="predict">予想</button>
+      <button class="tab" data-tab="log">馬券記録</button>
+      <button class="tab" data-tab="stats">成績分析</button>
+      <button class="tab" data-tab="settings">設定</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ================= 予想 ================= -->
+    <section id="tab-predict" class="panel active">
+      <div class="card">
+        <h2>レース情報</h2>
+        <div class="grid-4">
+          <label>日付<input type="date" id="p-date" /></label>
+          <label>競馬場<select id="p-venue"></select></label>
+          <label>R<input type="number" id="p-race" min="1" max="12" value="11" /></label>
+          <label>レース名<input type="text" id="p-name" placeholder="例: ジャパンC" /></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>出走馬と評価</h2>
+          <div class="btn-row">
+            <button id="p-add" class="btn">＋ 馬を追加</button>
+            <button id="p-paste" class="btn">一括入力</button>
+            <button id="p-clear" class="btn ghost">クリア</button>
+          </div>
+        </div>
+        <p class="hint">単勝オッズと、あなたの評価（印 or スコア0〜100）を入力。印を押すとスコアが入ります。</p>
+        <div class="table-wrap">
+          <table class="horses">
+            <thead><tr><th>馬番</th><th>馬名</th><th>単勝オッズ</th><th>印</th><th>スコア</th><th></th></tr></thead>
+            <tbody id="p-horses"></tbody>
+          </table>
+        </div>
+        <div id="p-paste-box" class="paste-box hidden">
+          <p class="hint">1行1頭「馬番, 馬名, オッズ, スコア(省略可)」。タブ区切り・空白区切りも可。</p>
+          <textarea id="p-paste-text" rows="6" placeholder="1, ドウデュース, 3.2, 80&#10;2, リバティアイランド, 2.8&#10;3, スターズオンアース, 8.5, 65"></textarea>
+          <button id="p-paste-apply" class="btn primary">取り込む</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>モデル設定</h2>
+        <div class="grid-3">
+          <label>自分の予想の重み <output id="o-weight">50%</output>
+            <input type="range" id="p-weight" min="0" max="100" value="50" />
+            <span class="hint">0%=市場(オッズ)を完全に信頼 / 100%=自分の評価のみ</span>
+          </label>
+          <label>評価のメリハリ <output id="o-temp">10</output>
+            <input type="range" id="p-temp" min="3" max="30" value="10" />
+            <span class="hint">小さいほどスコア差が確率差に強く効く</span>
+          </label>
+          <label>買い目の基準EV <output id="o-minev">1.10</output>
+            <input type="range" id="p-minev" min="100" max="150" value="110" />
+            <span class="hint">これ以上の期待値の馬券だけ「買い」表示</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>分析結果（単勝・複勝）</h2>
+          <span id="p-overround" class="badge"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>馬番</th><th>馬名</th><th>オッズ</th><th>市場確率</th><th>自分確率</th>
+              <th>推定勝率</th><th>単勝EV</th><th>推定複勝率</th><th>推奨額(ケリー)</th><th></th>
+            </tr></thead>
+            <tbody id="p-result"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>組み合わせ馬券（推定的中率 上位）</h2>
+          <div class="seg" id="p-combo-type"></div>
+        </div>
+        <p class="hint">「必要オッズ」以上なら期待値が基準を超えます。実オッズを入れるとEVを計算します。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>買い目</th><th>推定的中率</th><th>理論オッズ</th><th>必要オッズ</th><th>実オッズ</th><th>EV</th><th></th></tr></thead>
+            <tbody id="p-combos"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 馬券記録 ================= -->
+    <section id="tab-log" class="panel">
+      <div class="card">
+        <h2 id="b-form-title">馬券を記録</h2>
+        <form id="b-form" class="grid-4">
+          <input type="hidden" id="b-id" />
+          <label>日付<input type="date" id="b-date" required /></label>
+          <label>競馬場<select id="b-venue"></select></label>
+          <label>R<input type="number" id="b-race" min="1" max="12" /></label>
+          <label>レース名<input type="text" id="b-name" /></label>
+          <label>券種<select id="b-type"></select></label>
+          <label>買い目<input type="text" id="b-sel" placeholder="例: 3-7 / 1-3-5" required /></label>
+          <label>購入額(円)<input type="number" id="b-stake" min="100" step="100" required /></label>
+          <label>払戻額(円)<input type="number" id="b-payout" min="0" step="10" placeholder="未確定なら空欄" /></label>
+          <label>自信度<select id="b-conf"><option value="">-</option><option>A</option><option>B</option><option>C</option></select></label>
+          <label>予想EV<input type="number" id="b-ev" step="0.01" placeholder="例: 1.25" /></label>
+          <label class="span-2">メモ（根拠・反省）<input type="text" id="b-memo" /></label>
+          <div class="span-4 btn-row">
+            <button type="submit" class="btn primary" id="b-submit">記録する</button>
+            <button type="button" class="btn ghost" id="b-cancel">クリア</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>記録一覧</h2>
+          <div class="btn-row">
+            <input type="search" id="b-search" placeholder="検索（レース名・買い目・メモ）" />
+            <select id="b-filter">
+              <option value="all">すべて</option>
+              <option value="pending">未確定のみ</option>
+              <option value="hit">的中のみ</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>日付</th><th>レース</th><th>券種</th><th>買い目</th><th class="num">購入</th><th class="num">払戻</th><th class="num">収支</th><th>自信</th><th>EV</th><th>メモ</th><th></th></tr></thead>
+            <tbody id="b-list"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 成績分析 ================= -->
+    <section id="tab-stats" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>サマリー</h2>
+          <select id="s-period">
+            <option value="all">全期間</option>
+            <option value="year">今年</option>
+            <option value="month">今月</option>
+            <option value="30d">直近30日</option>
+          </select>
+        </div>
+        <div class="kpis" id="s-kpis"></div>
+      </div>
+      <div class="card">
+        <h2>累積収支</h2>
+        <div id="s-chart" class="chart"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><h2>券種別</h2><div id="s-type"></div></div>
+        <div class="card"><h2>競馬場別</h2><div id="s-venue"></div></div>
+        <div class="card"><h2>自信度別</h2><div id="s-conf"></div></div>
+        <div class="card"><h2>予想EV帯別（モデルの検証）</h2><div id="s-ev"></div>
+          <p class="hint">EVが高い帯ほど実際の回収率も高ければ、予想モデルが機能しています。</p></div>
+        <div class="card span-2"><h2>月別</h2><div id="s-month"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= 設定 ================= -->
+    <section id="tab-settings" class="panel">
+      <div class="card">
+        <h2>資金管理</h2>
+        <div class="grid-3">
+          <label>運用資金(円)<input type="number" id="c-bankroll" min="0" step="1000" /></label>
+          <label>ケリー係数<select id="c-kelly">
+            <option value="0.1">1/10（かなり保守的）</option>
+            <option value="0.25">1/4（推奨）</option>
+            <option value="0.5">1/2</option>
+            <option value="1">フルケリー（非推奨）</option>
+          </select></label>
+          <label>1レース上限(円)<input type="number" id="c-cap" min="0" step="100" /></label>
+        </div>
+        <p class="hint">推奨額 = 運用資金 × ケリー比率 × 係数（上限で頭打ち）。推定確率の誤差を考えると1/4以下が安全です。</p>
+      </div>
+      <div class="card">
+        <h2>データ</h2>
+        <p class="hint">データはこのブラウザ内（localStorage）に保存されます。端末移行・バックアップはエクスポートを使ってください。</p>
+        <div class="btn-row">
+          <button id="d-export" class="btn">JSONエクスポート</button>
+          <button id="d-csv" class="btn">CSVエクスポート</button>
+          <label class="btn">JSONインポート<input type="file" id="d-import" accept="application/json" hidden /></label>
+          <button id="d-sample" class="btn ghost">サンプルデータ投入</button>
+          <button id="d-reset" class="btn danger">全データ削除</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="js/model.js"></script>
+  <script src="js/stats.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
