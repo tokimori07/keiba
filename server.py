@@ -28,6 +28,7 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+import gzip
 import hashlib
 from datetime import date as _date
 
@@ -37,7 +38,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.22-d"
+APP_VERSION = "2026.11.22-e"
 MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
@@ -97,10 +98,11 @@ class NetkeibaProvider:
         hit = self._cache.get(url)
         if hit and now - hit[0] < ttl:
             return hit[1]
-        path = os.path.join(self.CACHE_DIR, hashlib.sha1(url.encode()).hexdigest() + ".html")
-        if persist and os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                return f.read()
+        base = os.path.join(self.CACHE_DIR, hashlib.sha1(url.encode()).hexdigest())
+        if persist:
+            cached = read_cache(base)
+            if cached is not None:
+                return cached
         with self._lock:
             wait = self.MIN_INTERVAL - (time.time() - self._last)
             if wait > 0:
@@ -115,11 +117,16 @@ class NetkeibaProvider:
             finally:
                 self._last = time.time()
         text = decode(raw)
-        self._cache[url] = (time.time(), text)
         if persist:
+            # 保存するページはメモリには置かない（大量に取得してもメモリを食わない）。圧縮して保存
             os.makedirs(self.CACHE_DIR, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as f:
                 f.write(text)
+        else:
+            if len(self._cache) > 300:  # 一時キャッシュは古いものから捨てる
+                for k in sorted(self._cache, key=lambda k: self._cache[k][0])[:100]:
+                    del self._cache[k]
+            self._cache[url] = (time.time(), text)
         return text
 
     # ---- レース一覧 ----
@@ -150,10 +157,9 @@ class NetkeibaProvider:
             return self._jk[1]
         stats = A.JockeyStats()
         for f in files:
-            if not f.endswith(".html"):
+            if not (f.endswith(".html") or f.endswith(".html.gz")):
                 continue
-            with open(os.path.join(self.CACHE_DIR, f), encoding="utf-8") as fh:
-                html = fh.read()
+            html = read_cache(os.path.join(self.CACHE_DIR, f.split(".")[0])) or ""
             if "All_Result_Table" not in html:
                 continue
             for r in A.parse_result(html)["rows"]:
@@ -202,6 +208,17 @@ class NetkeibaProvider:
                     "updated": payload["updated"], "horses": horses}
         return {**info, "kind": kind, "status": payload["status"], "updated": payload["updated"],
                 "odds": combos_from_payload(payload, kind, type_no)}
+
+
+def read_cache(base):
+    """保存済みページを読む（圧縮版 .html.gz、旧形式 .html のどちらでも）"""
+    if os.path.exists(base + ".html.gz"):
+        with gzip.open(base + ".html.gz", "rt", encoding="utf-8") as f:
+            return f.read()
+    if os.path.exists(base + ".html"):
+        with open(base + ".html", encoding="utf-8") as f:
+            return f.read()
+    return None
 
 
 def add_jockeys(report, past, stats):
