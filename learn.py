@@ -21,11 +21,12 @@ FEATURES = [
     ("lastPlace", "前走の着順", "前走の着順÷頭数（小さいほど上位）"),
     ("logDays", "休養明け", "前走からの日数（対数）"),
     ("sameTop3", "同条件の実績", "同じ馬場・近い距離での3着内率"),
+    ("jockey", "騎手", "騎手の3着内率（騎乗数が少ないと平均に寄せる・レース内で標準化）"),
     ("fewRuns", "キャリアの浅さ", "近走が3走以下"),
     ("noData", "情報なし", "近走データがない"),
 ]
 KEYS = [k for k, _, _ in FEATURES]
-ZSCORE = ("rating", "last", "best")  # レース内で標準化する特徴量
+ZSCORE = ("rating", "last", "best", "jockey")  # レース内で標準化する特徴量
 
 
 def design(horses, market_p):
@@ -38,7 +39,7 @@ def design(horses, market_p):
         if len(ok) >= 2:
             m = sum(ok) / len(ok)
             sd = math.sqrt(sum((v - m) ** 2 for v in ok) / len(ok)) or 1.0
-            cols[k] = [((v - m) / sd) if v is not None else -0.5 for v in vals]  # 情報なしはやや下に置く
+            cols[k] = [((v - m) / sd) if v is not None else (0.0 if k == "jockey" else -0.5) for v in vals]  # 情報なしはやや下に置く
         else:
             cols[k] = [0.0] * len(vals)
     X = []
@@ -51,6 +52,7 @@ def design(horses, market_p):
             f.get("lastPlace") if f.get("lastPlace") is not None else 0.5,
             f.get("logDays") if f.get("logDays") is not None else math.log(60),
             f.get("sameTop3", 0.2),
+            cols["jockey"][i],
             1.0 if f.get("runs", 0) <= 3 else 0.0,
             1.0 if f.get("rating") is None else 0.0,
         ])
@@ -183,9 +185,34 @@ def choose_l2(train):
     return best
 
 
+def add_jockey_feature(races):
+    """
+    騎手の成績を「そのレースの前日まで」の結果だけで計算して特徴量に入れる（未来の情報を使わない）
+    races は日付順に処理し、同じ日のレースの結果はその日が終わってから加算する
+    """
+    from analysis import JockeyStats
+    stats = JockeyStats()
+    races = sorted(races, key=lambda r: (r["date"], r["race_id"]))
+    i = 0
+    while i < len(races):
+        day = races[i]["date"]
+        same_day = []
+        while i < len(races) and races[i]["date"] == day:
+            same_day.append(races[i])
+            i += 1
+        for race in same_day:
+            for h in race["horses"]:
+                if h.get("feat") is not None:
+                    h["feat"]["jockey"] = stats.rate(h["jockeyId"]) if h.get("jockeyId") else None
+        for race in same_day:
+            for h in race["horses"]:
+                stats.add(h.get("jockeyId"), h.get("jockey"), h["place"])
+    return races
+
+
 def evaluate(races, l2=None):
     """前半70%で学習 → 後半30%で「市場（オッズ）だけ」と比べて評価"""
-    races = sorted(races, key=lambda r: (r["date"], r["race_id"]))
+    races = add_jockey_feature(races)
     cut = int(len(races) * 0.7)
     train, test = races[:cut], races[cut:]
     if len(train) < 30 or len(test) < 10:

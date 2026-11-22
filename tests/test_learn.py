@@ -47,3 +47,18 @@ class T(unittest.TestCase):
         for a, b in zip(p, p2): self.assertAlmostEqual(a, b)
 
 if __name__ == "__main__": unittest.main()
+
+
+class Jockey(unittest.TestCase):
+    def test_no_leakage(self):
+        """騎手の成績は前日までの結果だけ。同じ日のレース結果は使わない"""
+        mk = lambda rid, date, place: {"race_id": rid, "date": date, "horses": [
+            {"jockeyId": "J1", "jockey": "A", "place": place, "odds": 3.0, "feat": {}},
+            {"jockeyId": "J2", "jockey": "B", "place": 2 if place == 1 else 1, "odds": 3.0, "feat": {}}]}
+        races = [mk("r3", "2026-01-02", 1), mk("r1", "2026-01-01", 1), mk("r2", "2026-01-01", 1)]
+        L.add_jockey_feature(races)
+        prior = (0 + 0.21 * 30) / 30
+        by = {r["race_id"]: r for r in races}
+        self.assertAlmostEqual(by["r1"]["horses"][0]["feat"]["jockey"], prior)
+        self.assertAlmostEqual(by["r2"]["horses"][0]["feat"]["jockey"], prior)  # 同日の r1 の結果は使わない
+        self.assertAlmostEqual(by["r3"]["horses"][0]["feat"]["jockey"], (2 + 0.21 * 30) / 32)

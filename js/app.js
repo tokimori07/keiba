@@ -219,6 +219,13 @@
       return `<i class="dot ${c}" title="${p == null ? '中止' : p + '着'}">${p == null ? '止' : p}</i>`;
     }).join('')}</span>`;
   }
+  function jockeyHtml(j) {
+    if (!j) return '';
+    const tip = j.rides ? `${j.name}：${j.rides}騎乗 ${j.wins}勝・3着内 ${j.top3}回（勝率${pct(j.winRate, 0)}・3着内率${pct(j.top3Rate, 0)}）※保存済みの過去レースから集計`
+      : `${j.name}：集計できる騎乗データがまだありません（バックテストを実行すると増えます）`;
+    const st = j.stars ? `<span class="stars mini">${'★'.repeat(j.stars)}<span class="off">${'★'.repeat(5 - j.stars)}</span></span>` : '';
+    return `<span class="jk" title="${esc(tip)}">${esc(j.name)}${st}</span>`;
+  }
   function wakuBadge(w, no) {
     const [bg, fg] = WAKU_COLOR[w] || ['#ccc', '#222'];
     return `<span class="umaban" style="background:${bg};color:${fg}" title="${w}枠">${esc(no)}</span>`;
@@ -347,7 +354,7 @@
           ${wakuClass(w) ? `<span class="waku-tip ${wakuClass(w)}" title="過去10年でこの枠は${wakuClass(w) === 'good' ? '好成績' : '不振'}">${wakuClass(w) === 'good' ? '◎枠' : '△枠'}</span>` : ''}</td>
         <td class="c-name">
           ${edit ? `<input class="plain w-name" data-f="name" value="${esc(h.name)}" placeholder="馬名" />` : `<div class="hname">${esc(h.name) || '<span class="hint">馬名未入力</span>'}</div>`}
-          <div class="hsub">${x.rating !== undefined ? recentHtml(x.recent) : ''}
+          <div class="hsub">${jockeyHtml(x.jockey)}${x.rating !== undefined ? recentHtml(x.recent) : ''}
             ${x.style ? `<span class="style-chip ${styleClass(x.style)}" title="脚質">${esc(x.style)}</span>` : ''}
             ${runs ? '<button class="link" data-act="more">近走</button>' : ''}</div>
         </td>
@@ -1268,7 +1275,7 @@
     }
     function render(r) {
       const imp = r.improvement;
-      const good = imp != null && imp > 0;
+      const good = imp != null && imp >= 0.003;  // 0.3%未満は誤差の範囲
       const feats = r.features.filter((f) => f.key !== 'market');
       const beta = r.model.beta;
       const maxAbs = Math.max(0.1, ...feats.map((f) => Math.abs(beta[f.key])));
@@ -1283,6 +1290,7 @@
         </div>
         <p class="verdict">${good
           ? '<b class="pos">学習モデルはオッズだけの予想より当たっています。</b>予想に使う価値があります。'
+          : imp > 0 ? '<b>オッズだけの予想とほぼ同じ精度です（差は誤差の範囲）。</b>今ある情報はすでにオッズに織り込まれている、という結果です。'
           : '<b class="neg">まだオッズだけの予想を上回れていません。</b>データ（期間）を増やして再学習してください。今は使わない方が安全です。'}</p>
         <div class="btn-row" style="margin:10px 0 14px">
           ${good ? '<button class="btn primary" data-act="use">このモデルを予想に使う</button>'

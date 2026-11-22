@@ -37,7 +37,8 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.22-c"
+APP_VERSION = "2026.11.22-d"
+MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
     "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
@@ -138,7 +139,27 @@ class NetkeibaProvider:
         info = self.race_info(race_id, date)
         html = self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800)
         past = A.parse_past5(html)
-        return with_model({**info, "horses": A.horses_report(past, info["surface"], info["distance"])}, past, date)
+        report = {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
+        add_jockeys(report, past, self.jockey_index())
+        return with_model(report, past, date)
+
+    # ---- 騎手の成績（保存済みの過去レース結果から集計）----
+    def jockey_index(self):
+        files = [f for f in os.listdir(self.CACHE_DIR)] if os.path.isdir(self.CACHE_DIR) else []
+        if getattr(self, "_jk", None) and self._jk[0] == len(files):
+            return self._jk[1]
+        stats = A.JockeyStats()
+        for f in files:
+            if not f.endswith(".html"):
+                continue
+            with open(os.path.join(self.CACHE_DIR, f), encoding="utf-8") as fh:
+                html = fh.read()
+            if "All_Result_Table" not in html:
+                continue
+            for r in A.parse_result(html)["rows"]:
+                stats.add(r.get("jockeyId"), r.get("jockey"), r["place"])
+        self._jk = (len(files), stats)
+        return stats
 
     # ---- 払戻（馬券の自動精算）----
     def payout(self, race_id):
@@ -183,6 +204,12 @@ class NetkeibaProvider:
                 "odds": combos_from_payload(payload, kind, type_no)}
 
 
+def add_jockeys(report, past, stats):
+    for h in report["horses"]:
+        p = past.get(h["no"], {})
+        h["jockey"] = stats.info(p.get("jockeyId", ""), p.get("jockey", "")) if p.get("jockeyId") else None
+
+
 def with_model(report, past, date):
     """学習モデルが保存されていれば、各馬の「市場以外の強さ」を付ける（最新オッズとの合成は画面側）"""
     model = L.load_model(ROOT)
@@ -193,6 +220,7 @@ def with_model(report, past, date):
     for h in hs:
         runs = past.get(h["no"], {}).get("runs", [])
         h["feat"] = A.horse_features(runs, report.get("surface"), report.get("distance"), d)
+        h["feat"]["jockey"] = h["jockey"]["rate"] if h.get("jockey") else None
     for h, u in zip(hs, L.own_strength(model, hs)):
         h["ownU"] = round(u, 4)
         h.pop("feat", None)
@@ -312,6 +340,7 @@ def combos_from_payload(payload, kind, type_no):
 # モック（動作確認・デモ用）
 # ---------------------------------------------------------------------------
 class MockProvider:
+    JOCKEYS = ["北川", "南野", "東田", "西山", "中島", "上原", "下村", "森", "林", "川口", "岡", "谷"]
     NAMES = ["アオゾラ", "ハヤテ", "ミカヅキ", "シロガネ", "ツバクロ", "ホシアカリ", "カザグルマ", "ユキノハナ",
              "イナズマ", "コハク", "サクラビト", "トキノカネ", "ナミノリ", "ヒバリ", "モミジガリ", "ワカバ"]
 
@@ -354,8 +383,15 @@ class MockProvider:
                              "place": place, "surface": rng.choice(["芝", "芝", "ダ"]), "distance": rng.choice([1400, 1600, 1800]),
                              "field": 16, "pop": place, "margin": round(0 if place == 1 else place * 0.12, 1), "last3f": 34.5,
                              "style": rng.choice(["逃げ", "先行", "差し", "追込"])})
-            past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs}
-        return with_model({**info, "horses": A.horses_report(past, "芝", 1600)}, past, date or "2026-12-31")
+            past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs,
+                           "jockeyId": f"J{(i * 7 + int(race_id[-2:])) % 12:02d}", "jockey": self.JOCKEYS[(i * 7 + int(race_id[-2:])) % 12]}
+        report = {**info, "horses": A.horses_report(past, "芝", 1600)}
+        stats = A.JockeyStats()
+        for j in range(12):  # 架空の騎手成績（番号が小さいほど上手い）
+            for k in range(120):
+                stats.add(f"J{j:02d}", self.JOCKEYS[j], 1 if k % (3 + j) == 0 else 5)
+        add_jockeys(report, past, stats)
+        return with_model(report, past, date or "2026-12-31")
 
     def past5(self, race_id):
         return {h["no"]: {"no": h["no"], "waku": h["waku"], "name": h["name"], "style": "", "runs": h["runs"]}
@@ -370,7 +406,8 @@ class MockProvider:
         order = sorted(range(len(p)), key=lambda i: -strength[i])
         pops = {i: k + 1 for k, i in enumerate(sorted(range(len(p)), key=lambda i: -p[i]))}
         rows = [{"place": k + 1, "waku": None, "no": i + 1, "pop": pops[i], "odds": max(1.1, round(0.8 / p[i], 1)),
-                 "firstCorner": None, "name": "", "style": None} for k, i in enumerate(order)]
+                 "firstCorner": None, "name": "", "style": None,
+                 "jockeyId": f"J{(i * 7 + int(race_id[-2:])) % 12:02d}", "jockey": ""} for k, i in enumerate(order)]
         fuku = {rows[k]["no"]: max(100, int(rows[k]["odds"] * 30) // 10 * 10) for k in range(3)}
         return {"rows": rows, "field": len(rows), "payout": {}, "fukusho": fuku}
 
@@ -573,8 +610,8 @@ def make_handler(provider):
                 if url.path == "/api/learn/use":
                     if not job.learned:
                         return self._json(400, {"error": "先に学習してください"})
-                    if (job.learned.get("improvement") or 0) <= 0 and q.get("force") != "1":
-                        return self._json(400, {"error": "検証期間でオッズより精度が低いため、使用をおすすめしません"})
+                    if (job.learned.get("improvement") or 0) < MIN_IMPROVEMENT and q.get("force") != "1":
+                        return self._json(400, {"error": "検証期間でオッズだけの予想をはっきり上回れていないため、使用をおすすめしません"})
                     L.save_model(ROOT, job.learned["model"])
                     return self._json(200, {"ok": True, "model": job.learned["model"]})
                 if url.path == "/api/learn/off":

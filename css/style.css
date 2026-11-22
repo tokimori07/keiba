@@ -365,3 +365,5 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
   .bet-row .bet-act { grid-column: 1 / -1; }
 }
 .muted-inline { color: var(--muted); font-size: 12px; }
+.jk { font-size: 12px; font-weight: 700; color: var(--text); padding: 0 8px 0 0; border-right: 1px solid var(--border); white-space: nowrap; }
+.stars.mini { font-size: 10px; margin-left: 3px; }

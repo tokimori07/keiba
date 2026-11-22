@@ -56,6 +56,7 @@ def build_race(info, past, result, race_date):
             continue
         horses.append({
             "no": no, "rating": ratings.get(no), "pop": r["pop"], "odds": r["odds"],
+            "jockeyId": r.get("jockeyId", ""), "jockey": r.get("jockey", ""),
             "place": r["place"], "fukusho": result.get("fukusho", {}).get(no, 0),
             "feat": feats.get(no) or A.horse_features([], info.get("surface"), info.get("distance"), race_date),
         })

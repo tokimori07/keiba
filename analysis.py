@@ -83,6 +83,7 @@ def parse_past5(html):
             continue
         name = re.search(r'class="Horse02">\s*<a[^>]*>(.*?)</a>', row, re.S)
         style = re.search(r'class="kyakusitu">(.*?)<', row)
+        jk = re.search(r'<td class="Jockey">.*?/jockey/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
         runs = []
         for cell in re.findall(r'<td class="Past[^"]*"[^>]*>(.*?)</td>', row, re.S):
             run = parse_past_cell(cell)
@@ -93,6 +94,8 @@ def parse_past5(html):
             "waku": int(waku.group(1)) if waku else None,
             "name": strip_tags(name.group(1)) if name else "",
             "style": strip_tags(style.group(1)) if style else "",
+            "jockeyId": jk.group(1) if jk else "",
+            "jockey": strip_tags(jk.group(2)) if jk else "",
             "runs": runs,
         }
     return out
@@ -278,7 +281,10 @@ def parse_result(html):
             odds = re.search(r'class="Odds Txt_R">\s*<span[^>]*>\s*([\d.]+)\s*<', row)  # 上位人気以外はclassなしのspan
             passing = re.search(r'class="PassageRate">\s*([\d-]+)', row)
             name = re.search(r'class="HorseNameSpan">(.*?)<', row, re.S)
+            jk = re.search(r'/jockey/result/recent/(\d+)/?"[^>]*>\s*<span class="JockeyNameSpan">(.*?)</span>', row, re.S)
             rows.append({
+                "jockeyId": jk.group(1) if jk else "",
+                "jockey": strip_tags(jk.group(2)) if jk else "",
                 "place": to_int(rank.group(1)) if rank and re.fullmatch(r"\d+", rank.group(1).strip()) else None,
                 "waku": to_int(waku.group(1)) if waku else None,
                 "no": to_int(no.group(1)) if no else None,
@@ -459,3 +465,41 @@ def parse_payouts(html):
 
 def strip_tags_keep_br(s):
     return re.sub(r"<(?!br)[^>]+>", "", s or "")
+
+
+# ---------------------------------------------------------------------------
+# 騎手の成績
+# ---------------------------------------------------------------------------
+JOCKEY_PRIOR = 0.21   # 平均的な3着内率（約3/14頭）
+JOCKEY_K = 30         # 騎乗数が少ない騎手は平均へ寄せる強さ（30騎乗分）
+
+
+class JockeyStats:
+    """騎乗結果を積み上げて、騎手ごとの成績を返す（日付順に add すれば「その時点まで」の成績になる）"""
+
+    def __init__(self):
+        self.s = {}
+
+    def add(self, jockey_id, name, place):
+        if not jockey_id or place is None:
+            return
+        x = self.s.setdefault(jockey_id, {"name": name, "rides": 0, "wins": 0, "top3": 0})
+        x["rides"] += 1
+        x["wins"] += place == 1
+        x["top3"] += place <= 3
+        if name:
+            x["name"] = name
+
+    def rate(self, jockey_id):
+        """平均へ寄せた3着内率"""
+        x = self.s.get(jockey_id) or {"rides": 0, "top3": 0}
+        return (x["top3"] + JOCKEY_PRIOR * JOCKEY_K) / (x["rides"] + JOCKEY_K)
+
+    def info(self, jockey_id, name=""):
+        x = self.s.get(jockey_id) or {"name": name, "rides": 0, "wins": 0, "top3": 0}
+        r = self.rate(jockey_id)
+        stars = 5 if r >= 0.36 else 4 if r >= 0.29 else 3 if r >= 0.22 else 2 if r >= 0.16 else 1
+        return {"id": jockey_id, "name": name or x["name"], "rides": x["rides"], "wins": x["wins"], "top3": x["top3"],
+                "winRate": x["wins"] / x["rides"] if x["rides"] else None,
+                "top3Rate": x["top3"] / x["rides"] if x["rides"] else None,
+                "rate": round(r, 4), "stars": stars if x["rides"] >= 10 else None}
