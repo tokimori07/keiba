@@ -336,6 +336,14 @@ def make_handler(provider):
     return Handler
 
 
+def already_running(url):
+    try:
+        with urllib.request.urlopen(url + "/api/ping", timeout=2) as res:
+            return json.load(res).get("ok") is True
+    except Exception:
+        return False
+
+
 def main():
     if sys.version_info < (3, 7):
         sys.exit("Python 3.7 以上が必要です（現在 %s）" % sys.version.split()[0])
@@ -345,15 +353,20 @@ def main():
     ap.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     args = ap.parse_args()
     provider = MockProvider() if args.mock else NetkeibaProvider()
-    srv = None
-    for port in range(args.port, args.port + 20):  # 使用中なら次の番号を試す
-        try:
-            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(provider))
-            break
-        except OSError:
-            continue
-    if srv is None:
-        sys.exit(f"ポート {args.port}〜{args.port + 19} がすべて使用中です。--port で別の番号を指定してください")
+    url = f"http://localhost:{args.port}"
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(provider))
+    except OSError:
+        # 既に競馬ノートが動いていれば、それを開くだけにする
+        # （ポートが変わると保存データが見えなくなるため、別ポートでは起動しない）
+        if already_running(url):
+            print(f"競馬ノートは既に起動しています: {url}")
+            if not args.no_browser:
+                webbrowser.open(url)
+            return
+        sys.exit(f"ポート {args.port} が他のアプリに使われています。"
+                 f"そのアプリを終了するか、--port 8800 のように別の番号を指定してください"
+                 f"（番号を変えると、保存した記録は元の番号のときのURLでしか見えません）")
     url = f"http://localhost:{srv.server_address[1]}"
     print(f"競馬ノート: {url}  （{'モック' if args.mock else 'netkeiba'}モード）")
     print("このウィンドウを閉じるか Ctrl+C で終了します")
