@@ -67,3 +67,21 @@ class T(unittest.TestCase):
         self.assertEqual(t["waku"][7]["top3"], 1)
 
 if __name__ == "__main__": unittest.main()
+
+
+class Payouts(unittest.TestCase):
+    def test_parse_payouts(self):
+        html = '''<tr class="Tansho"><th>単勝</th><td class="Result"><div><span>15</span></div><div><span></span></div></td>
+<td class="Payout"><span>180円</span></td></tr>
+<tr class="Fukusho"><th>複勝</th><td class="Result"><div><span>15</span></div><div><span></span></div><div><span>6</span></div></td>
+<td class="Payout"><span>110円<br />230円</span></td></tr>
+<tr class="Wide"><th>ワイド</th><td class="Result"><ul><li><span>6</span></li><li><span>15</span></li><li></li></ul><ul><li><span>3</span></li><li><span>15</span></li><li></li></ul></td>
+<td class="Payout"><span>340円<br />3,930円</span></td></tr>
+<tr class="Tan3"><th>3連単</th><td class="Result"><ul><li><span>15</span></li><li><span>6</span></li><li><span>3</span></li></ul></td>
+<td class="Payout"><span>52,470円</span></td></tr>'''
+        p = A.parse_payouts(html)
+        self.assertEqual(p["単勝"], [{"nos": [15], "pay": 180}])
+        self.assertEqual(p["複勝"], [{"nos": [15], "pay": 110}, {"nos": [6], "pay": 230}])
+        self.assertEqual(p["ワイド"][1], {"nos": [3, 15], "pay": 3930})
+        self.assertEqual(p["3連単"], [{"nos": [15, 6, 3], "pay": 52470}])
+        self.assertEqual(A.parse_payouts("<html>発走前</html>"), {})

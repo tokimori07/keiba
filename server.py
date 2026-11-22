@@ -37,7 +37,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.22-b"
+APP_VERSION = "2026.11.22-c"
 
 VENUES = {
     "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
@@ -139,6 +139,14 @@ class NetkeibaProvider:
         html = self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800)
         past = A.parse_past5(html)
         return with_model({**info, "horses": A.horses_report(past, info["surface"], info["distance"])}, past, date)
+
+    # ---- 払戻（馬券の自動精算）----
+    def payout(self, race_id):
+        html = self._get(f"{self.BASE}/race/result.html?race_id={race_id}", ttl=300)
+        pays = A.parse_payouts(html)
+        if pays:  # 確定した結果は保存して二度と取りに行かない
+            self._get(f"{self.BASE}/race/result.html?race_id={race_id}", ttl=300, persist=True)
+        return {"race_id": race_id, "final": bool(pays), "payouts": pays}
 
     # ---- バックテスト用（過去レースなので保存して再利用）----
     def past5(self, race_id):
@@ -366,6 +374,22 @@ class MockProvider:
         fuku = {rows[k]["no"]: max(100, int(rows[k]["odds"] * 30) // 10 * 10) for k in range(3)}
         return {"rows": rows, "field": len(rows), "payout": {}, "fukusho": fuku}
 
+    def payout(self, race_id):
+        rows = self.result(race_id)["rows"]
+        a, b, c = rows[0], rows[1], rows[2]
+        o = lambda x: int(x * 100) // 10 * 10
+        pays = {
+            "単勝": [{"nos": [a["no"]], "pay": o(a["odds"])}],
+            "複勝": [{"nos": [r["no"]], "pay": max(100, o(r["odds"] / 3))} for r in (a, b, c)],
+            "馬連": [{"nos": sorted([a["no"], b["no"]]), "pay": o(a["odds"] * b["odds"] / 2)}],
+            "ワイド": [{"nos": sorted(p), "pay": max(100, o(x / 6))} for p, x in
+                      (([a["no"], b["no"]], a["odds"] * b["odds"]), ([a["no"], c["no"]], a["odds"] * c["odds"]), ([b["no"], c["no"]], b["odds"] * c["odds"]))],
+            "馬単": [{"nos": [a["no"], b["no"]], "pay": o(a["odds"] * b["odds"])}],
+            "3連複": [{"nos": sorted([a["no"], b["no"], c["no"]]), "pay": o(a["odds"] * b["odds"] * c["odds"] / 6)}],
+            "3連単": [{"nos": [a["no"], b["no"], c["no"]], "pay": o(a["odds"] * b["odds"] * c["odds"])}],
+        }
+        return {"race_id": race_id, "final": True, "payouts": pays}
+
     def trend(self, race_id, date):
         info = self._info(race_id)
         rng = random.Random(race_id + "trend")
@@ -541,6 +565,9 @@ def make_handler(provider):
                 if url.path == "/api/backtest/cancel":
                     job.cancel()
                     return self._json(200, job.state)
+                if url.path == "/api/payout":
+                    parse_race_id(q.get("race_id", ""))
+                    return self._json(200, provider.payout(q["race_id"]))
                 if url.path == "/api/learn/run":
                     return self._json(200, job.learn())
                 if url.path == "/api/learn/use":

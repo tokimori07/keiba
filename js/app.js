@@ -67,7 +67,7 @@
       document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b === btn));
       document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
       if (btn.dataset.tab === 'stats') renderStats();
-      if (btn.dataset.tab === 'log') renderLog();
+      if (btn.dataset.tab === 'log') { renderLog(); autoSettle(true); }
     });
   });
 
@@ -489,77 +489,273 @@
   // =====================================================
   // 馬券記録
   // =====================================================
+  async function apiGet(path) {
+    const res = await fetch(path, { cache: 'no-store' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
+  }
+  const BK = window.KeibaBets;
+  const REC_TYPES = ['単勝', '複勝', 'ワイド', '馬連', '馬単', '3連複', '3連単', '枠連', 'WIN5'];
+  const rec = { raceId: '', races: [], runners: [], type: '単勝', mode: 'normal', picks: [] };
+  const online = () => location.protocol !== 'file:';
+
   function initLog() {
     fillSelect($('b-venue'), VENUES, true);
-    fillSelect($('b-type'), BET_TYPES);
-    resetForm();
-    $('b-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const id = $('b-id').value;
-      const payoutRaw = $('b-payout').value;
-      const bet = {
-        id: id || uid(),
-        createdAt: id ? (state.bets.find((b) => b.id === id) || {}).createdAt || Date.now() : Date.now(),
-        date: $('b-date').value,
-        venue: $('b-venue').value,
-        race: $('b-race').value ? Number($('b-race').value) : '',
-        name: $('b-name').value.trim(),
-        type: $('b-type').value,
-        sel: $('b-sel').value.trim(),
-        stake: Number($('b-stake').value),
-        payout: payoutRaw === '' ? null : Number(payoutRaw),
-        conf: $('b-conf').value,
-        ev: $('b-ev').value === '' ? '' : Number($('b-ev').value),
-        memo: $('b-memo').value.trim(),
-      };
-      if (id) state.bets = state.bets.map((b) => (b.id === id ? bet : b));
-      else state.bets.push(bet);
-      save(); resetForm(); renderLog();
-      toast(id ? '更新しました' : '記録しました');
+    $('b-types').innerHTML = REC_TYPES.map((t) => `<button data-t="${t}">${t}</button>`).join('');
+    $('b-types').addEventListener('click', (e) => {
+      const t = e.target.closest('button'); if (!t) return;
+      rec.type = t.dataset.t;
+      const k = (BK.TYPES[rec.type] || {}).k || 1;
+      if (rec.mode === 'normal' && k > 1 && rec.picks.length > k) rec.picks = rec.picks.slice(0, k);
+      renderForm();
     });
-    $('b-cancel').addEventListener('click', resetForm);
+    $('b-mode').addEventListener('click', (e) => {
+      if (!e.target.dataset.m) return;
+      rec.mode = e.target.dataset.m; renderForm();
+    });
+    $('b-horses').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-no]'); if (!btn) return;
+      const no = Number(btn.dataset.no);
+      const k = (BK.TYPES[rec.type] || {}).k || 1;
+      if (rec.picks.includes(no)) rec.picks = rec.picks.filter((x) => x !== no);
+      else if (rec.mode === 'normal' && k > 1 && rec.picks.length >= k) { toast(`${rec.type}は${k}頭まで（もっと選ぶならボックス）`); return; }
+      else rec.picks.push(no);
+      renderForm();
+    });
+    $('b-quick').addEventListener('click', (e) => {
+      if (!e.target.dataset.v) return;
+      $('b-unit').value = e.target.dataset.v; renderForm();
+    });
+    $('b-unit').addEventListener('input', renderForm);
+    $('b-sel').addEventListener('input', renderForm);
+    $('b-date').addEventListener('change', () => loadRaces());
+    $('b-racesel').addEventListener('change', () => selectRace($('b-racesel').value));
+    ['b-venue', 'b-race', 'b-name'].forEach((id) => $(id).addEventListener('input', () => { if (!$('b-racesel').value) renderForm(); }));
+    $('b-submit').addEventListener('click', submit);
+    $('b-cancel').addEventListener('click', () => resetForm());
     $('b-search').addEventListener('input', renderLog);
     $('b-filter').addEventListener('change', renderLog);
+    $('b-settle').addEventListener('click', () => autoSettle(false));
     $('b-list').addEventListener('click', (e) => {
-      const tr = e.target.closest('tr'); if (!tr) return;
-      const b = state.bets.find((x) => x.id === tr.dataset.id); if (!b) return;
-      if (e.target.dataset.act === 'edit') editBet(b);
-      if (e.target.dataset.act === 'del' && confirm('この記録を削除しますか？')) {
+      const btn = e.target.closest('button[data-act]'); if (!btn) return;
+      const row = e.target.closest('[data-id]');
+      const b = row && state.bets.find((x) => x.id === row.dataset.id); if (!b) return;
+      if (btn.dataset.act === 'edit') editBet(b);
+      if (btn.dataset.act === 'del' && confirm('この記録を削除しますか？')) {
         state.bets = state.bets.filter((x) => x.id !== b.id); save(); renderLog();
       }
-      if (e.target.dataset.act === 'miss') { b.payout = 0; save(); renderLog(); }
+      if (btn.dataset.act === 'miss') { b.payout = 0; save(); renderLog(); }
     });
+    if (!online()) {
+      $('b-racesel').innerHTML = '<option value="">サーバー未起動（下で手入力）</option>';
+      $('b-racesel').disabled = true; $('b-manual-race').open = true; $('b-settle').disabled = true;
+    }
+    resetForm();
   }
 
-  function resetForm() {
-    $('b-form').reset();
+  // ---------- レース選択 ----------
+  async function loadRaces(selectId) {
+    if (!online()) return;
+    const date = $('b-date').value || today();
+    $('b-racesel').innerHTML = '<option value="">読み込み中…</option>';
+    try {
+      const { races } = await apiGet(`/api/races?date=${date.replace(/-/g, '')}`);
+      rec.races = races;
+      if (!races.length) { $('b-racesel').innerHTML = '<option value="">この日はJRAの開催がありません</option>'; return; }
+      const graded = races.filter((r) => r.grade);
+      const byVenue = {};
+      races.filter((r) => !r.grade).forEach((r) => { (byVenue[r.venue] = byVenue[r.venue] || []).push(r); });
+      const opt = (r) => `<option value="${esc(r.race_id)}">${r.grade ? `【${esc(r.grade)}】` : ''}${esc(r.venue)}${r.race}R ${esc(r.name)}${r.course ? `（${esc(r.course)}）` : ''}</option>`;
+      $('b-racesel').innerHTML = '<option value="">レースを選んでください</option>'
+        + (graded.length ? `<optgroup label="重賞">${graded.map(opt).join('')}</optgroup>` : '')
+        + Object.entries(byVenue).map(([v, list]) => `<optgroup label="${esc(v)}">${list.sort((a, b) => a.race - b.race).map(opt).join('')}</optgroup>`).join('');
+      const want = selectId || rec.raceId;
+      if (want && races.some((r) => r.race_id === want)) { $('b-racesel').value = want; await selectRace(want, true); }
+    } catch (e) { $('b-racesel').innerHTML = `<option value="">取得できませんでした（${esc(e.message)}）</option>`; }
+  }
+
+  async function selectRace(rid, keepPicks) {
+    rec.raceId = rid;
+    if (!keepPicks) rec.picks = [];
+    rec.runners = [];
+    const r = rec.races.find((x) => x.race_id === rid);
+    if (r) { $('b-venue').value = r.venue; $('b-race').value = r.race; $('b-name').value = r.name; }
+    renderForm();
+    if (!rid || !online()) return;
+    $('b-horses').innerHTML = '<p class="hint">出走馬を読み込み中…</p>';
+    try {
+      const o = await apiGet(`/api/odds?race_id=${rid}&type=win`);
+      rec.runners = o.horses;
+      if (!$('b-name').value && o.name) $('b-name').value = o.name;
+    } catch (e) { toast('出走馬を取得できませんでした。買い目は手入力してください'); }
+    renderForm();
+  }
+
+  // ---------- フォーム表示 ----------
+  function currentCombos() {
+    const t = BK.TYPES[rec.type];
+    if (!t) return null;  // WIN5など手入力
+    return BK.buildCombos(rec.type, rec.mode, rec.picks);
+  }
+
+  function renderForm() {
+    document.querySelectorAll('#b-types button').forEach((b) => b.classList.toggle('on', b.dataset.t === rec.type));
+    const t = BK.TYPES[rec.type];
+    const k = t ? t.k : 0;
+    $('b-mode').classList.toggle('hidden', !t || k === 1);
+    document.querySelectorAll('#b-mode button').forEach((b) => b.classList.toggle('on', b.dataset.m === rec.mode));
+    $('b-mode-hint').textContent = !t ? '' : k === 1 ? '複数選ぶとそれぞれ1点ずつ買います'
+      : rec.mode === 'box' ? `選んだ馬の全組み合わせ（${k}頭以上）` : t.ordered ? `着順どおりに${k}頭を選択（1着から順に）` : `${k}頭を選択`;
+
+    // 出走馬ボタン（枠連は枠番）
+    const manual = !t || (!rec.runners.length && rec.type !== '枠連');
+    $('b-sel-wrap').classList.toggle('hidden', !manual);
+    if (rec.type === '枠連') {
+      $('b-horses').innerHTML = [1, 2, 3, 4, 5, 6, 7, 8].map((w) => `<button class="hbtn ${rec.picks.includes(w) ? 'on' : ''}" data-no="${w}">
+        ${wakuBadge(w, w)}<span class="hb-name">${w}枠</span>${rec.picks.includes(w) ? `<span class="hb-ord">${rec.picks.indexOf(w) + 1}</span>` : ''}</button>`).join('');
+    } else if (rec.runners.length && t) {
+      const n = rec.runners.length;
+      $('b-horses').innerHTML = rec.runners.map((h) => {
+        const on = rec.picks.includes(h.no);
+        const scratched = !h.odds && h.odds !== undefined;
+        return `<button class="hbtn ${on ? 'on' : ''}" data-no="${h.no}" ${scratched ? 'disabled title="取消"' : ''}>
+          ${wakuBadge(wakuOf(h.no, n), h.no)}<span class="hb-name">${esc(h.name || '')}</span>
+          <span class="hb-odds">${h.odds ? h.odds.toFixed(1) : scratched ? '取消' : ''}</span>
+          ${on ? `<span class="hb-ord">${t.ordered && rec.mode === 'normal' ? (rec.picks.indexOf(h.no) + 1) + '着' : '✓'}</span>` : ''}</button>`;
+      }).join('');
+    } else if (!t) {
+      $('b-horses').innerHTML = '<p class="hint">WIN5は買い目を手入力してください</p>';
+    } else if (!rec.raceId) {
+      $('b-horses').innerHTML = `<p class="hint">${online() ? 'レースを選ぶと出走馬が表示されます。' : ''}一覧にないレースは買い目を手入力してください</p>`;
+    }
+
+    const combos = currentCombos();
+    const unit = Number($('b-unit').value) || 0;
+    const points = combos ? combos.length : ($('b-sel').value.trim() ? 1 : 0);
+    const usePicks = combos && !manual;
+    $('b-picked').innerHTML = usePicks && rec.picks.length
+      ? `<span class="muted-inline">選択:</span> <b>${esc(rec.type)}</b> ${esc(BK.label(rec.type, rec.mode, rec.picks))}`
+      : '';
+    const pts = usePicks ? combos.length : points;
+    $('b-total').innerHTML = pts
+      ? `<span>${pts}点 × ${yen(unit)}</span><b>合計 ${yen(pts * unit)}</b>`
+      : `<span class="hint">${usePicks && t && t.k > 1 && rec.mode === 'normal' ? `あと${Math.max(0, t.k - rec.picks.length)}頭選んでください` : '買い目を選んでください'}</span>`;
+    $('b-submit').disabled = !pts || !unit;
+  }
+
+  function resetForm(keepRace) {
     $('b-id').value = '';
-    $('b-date').value = d().date || today();
+    if (!keepRace) {
+      $('b-date').value = d().date || today();
+      rec.raceId = d().raceId && d().date === $('b-date').value ? d().raceId : '';
+    }
+    rec.picks = []; rec.mode = 'normal';
+    $('b-unit').value = 100; $('b-sel').value = ''; $('b-payout').value = '';
+    $('b-conf').value = ''; $('b-ev').value = ''; $('b-memo').value = '';
     $('b-form-title').textContent = '馬券を記録';
-    $('b-submit').textContent = '記録する';
+    $('b-submit').textContent = 'この内容で記録する';
+    if (!keepRace) loadRaces();
+    renderForm();
+  }
+
+  function submit() {
+    const id = $('b-id').value;
+    const t = BK.TYPES[rec.type];
+    const combos = currentCombos();
+    const manual = !t || (!rec.runners.length && rec.type !== '枠連');
+    let sel, cmb = null, picks = null;
+    if (manual) {
+      sel = $('b-sel').value.trim();
+      if (!sel) { toast('買い目を入力してください'); return; }
+      const nums = (sel.match(/\d+/g) || []).map(Number);
+      if (t && nums.length) {  // 手入力でも「3-7」などは自動精算できるようにする
+        picks = nums;
+        cmb = BK.buildCombos(rec.type, t.k === 1 || nums.length === t.k ? 'normal' : 'box', nums);
+        if (!cmb.length) cmb = null;
+      }
+    } else {
+      if (!combos.length) { toast('買い目を選んでください'); return; }
+      sel = BK.label(rec.type, rec.mode, rec.picks); cmb = combos; picks = rec.picks.slice();
+    }
+    const unit = Number($('b-unit').value);
+    const points = cmb ? cmb.length : 1;
+    const old = id ? state.bets.find((b) => b.id === id) : null;
+    const payoutRaw = $('b-payout').value;
+    const bet = {
+      id: id || uid(), createdAt: old ? old.createdAt : Date.now(),
+      date: $('b-date').value, venue: $('b-venue').value, race: $('b-race').value ? Number($('b-race').value) : '',
+      name: $('b-name').value.trim(), raceId: $('b-racesel').value || '',
+      type: rec.type, mode: rec.mode, picks, combos: cmb, points, unit, stake: unit * points, sel,
+      payout: payoutRaw === '' ? null : Number(payoutRaw),
+      conf: $('b-conf').value, ev: $('b-ev').value === '' ? '' : Number($('b-ev').value), memo: $('b-memo').value.trim(),
+    };
+    if (!bet.name && !bet.raceId) { toast('レースを選ぶか、レース名を入力してください'); return; }
+    if (id) state.bets = state.bets.map((b) => (b.id === id ? bet : b));
+    else state.bets.push(bet);
+    save(); renderLog();
+    toast(`${id ? '更新' : '記録'}しました（${bet.type} ${bet.sel}・${yen(bet.stake)}）`);
+    resetForm(true);  // 同じレースで続けて記録しやすいよう、レースは残す
   }
 
   function editBet(b) {
     $('b-id').value = b.id;
-    $('b-date').value = b.date; $('b-venue').value = b.venue || ''; $('b-race').value = b.race || '';
-    $('b-name').value = b.name || ''; $('b-type').value = b.type; $('b-sel').value = b.sel;
-    $('b-stake').value = b.stake; $('b-payout').value = b.payout ?? '';
-    $('b-conf').value = b.conf || ''; $('b-ev').value = b.ev ?? ''; $('b-memo').value = b.memo || '';
+    $('b-date').value = b.date;
+    $('b-venue').value = b.venue || ''; $('b-race').value = b.race || ''; $('b-name').value = b.name || '';
+    rec.type = b.type; rec.mode = b.mode || 'normal'; rec.picks = (b.picks || []).slice();
+    rec.raceId = b.raceId || '';
+    $('b-unit').value = b.unit || b.stake;
+    $('b-sel').value = b.picks ? '' : b.sel;
+    $('b-payout').value = b.payout ?? ''; $('b-conf').value = b.conf || ''; $('b-ev').value = b.ev ?? ''; $('b-memo').value = b.memo || '';
     $('b-form-title').textContent = '記録を編集';
     $('b-submit').textContent = '更新する';
+    if (!b.raceId) { $('b-manual-race').open = true; if (!b.picks) $('b-sel').value = b.sel; }
+    loadRaces(b.raceId);
+    renderForm();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  /** 予想タブの「記録」ボタンから */
   function prefillBet({ type, sel, ev, stake }) {
-    resetForm();
-    $('b-date').value = d().date; $('b-venue').value = d().venue; $('b-race').value = d().race;
-    $('b-name').value = d().name; $('b-type').value = type; $('b-sel').value = sel;
-    $('b-ev').value = ev ? Number(ev).toFixed(2) : '';
-    $('b-stake').value = stake || '';
     document.querySelector('.tab[data-tab="log"]').click();
-    $('b-stake').focus();
+    $('b-id').value = '';
+    $('b-date').value = d().date || today();
+    rec.type = type; rec.mode = 'normal';
+    rec.picks = String(sel).match(/\d+/g).map(Number);
+    rec.raceId = d().raceId || '';
+    $('b-venue').value = d().venue || ''; $('b-race').value = d().race || ''; $('b-name').value = d().name || '';
+    $('b-unit').value = stake || 100;
+    $('b-ev').value = ev ? Number(ev).toFixed(2) : '';
+    $('b-form-title').textContent = '馬券を記録';
+    $('b-submit').textContent = 'この内容で記録する';
+    loadRaces(rec.raceId).then(() => renderForm());
+    renderForm();
   }
 
+  // ---------- 自動精算 ----------
+  async function autoSettle(quiet) {
+    if (!online()) return;
+    const pending = state.bets.filter((b) => !S.isSettled(b) && b.raceId && b.combos && b.date <= today());
+    if (!pending.length) { if (!quiet) toast('自動反映できる未確定の馬券はありません'); return; }
+    const ids = [...new Set(pending.map((b) => b.raceId))];
+    let done = 0, hit = 0;
+    if (!quiet) $('b-settle').disabled = true;
+    for (const rid of ids) {
+      try {
+        const r = await apiGet(`/api/payout?race_id=${rid}`);
+        if (!r.final) continue;
+        pending.filter((b) => b.raceId === rid).forEach((b) => {
+          const s = BK.settle(b, r.payouts);
+          b.payout = s.payout; b.hits = s.hits; done++; if (s.hits) hit++;
+        });
+      } catch (e) { /* 取得できないレースは飛ばす */ }
+    }
+    $('b-settle').disabled = false;
+    save(); renderLog();
+    if (done || !quiet) toast(done ? `${done}件の結果を反映しました（的中 ${hit}件）` : 'まだ結果が確定したレースはありません');
+  }
+
+  // ---------- 一覧 ----------
   function renderLog() {
     const q = $('b-search').value.trim().toLowerCase();
     const f = $('b-filter').value;
@@ -567,24 +763,39 @@
       .filter((b) => !q || [b.name, b.sel, b.memo, b.venue, b.type].join(' ').toLowerCase().includes(q))
       .filter((b) => f === 'all' || (f === 'pending' ? !S.isSettled(b) : Number(b.payout) > 0))
       .sort((a, b) => -S.byDate(a, b));
-    $('b-list').innerHTML = list.map((b) => {
-      const settled = S.isSettled(b);
-      const pl = settled ? b.payout - b.stake : null;
-      return `<tr data-id="${esc(b.id)}">
-        <td>${esc(b.date)}</td>
-        <td>${esc(b.venue)}${b.race ? esc(b.race) + 'R' : ''} ${esc(b.name)}</td>
-        <td>${esc(b.type)}</td><td><b>${esc(b.sel)}</b></td>
-        <td class="num">${yen(b.stake)}</td>
-        <td class="num">${settled ? yen(b.payout) : '<span class="tag pending">未確定</span>'}</td>
-        <td class="num ${signCls(pl)}">${settled ? yen(pl) : '-'}</td>
-        <td>${esc(b.conf)}</td><td class="num">${b.ev ? Number(b.ev).toFixed(2) : ''}</td>
-        <td class="memo">${esc(b.memo)}</td>
-        <td><div class="btn-row">
-          ${settled ? '' : '<button class="btn small" data-act="miss" title="払戻0円で確定">ハズレ</button>'}
-          <button class="btn small" data-act="edit">編集</button>
-          <button class="btn small ghost" data-act="del">✕</button></div></td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="11" class="empty">記録がありません</td></tr>';
+    const pendingAuto = state.bets.filter((b) => !S.isSettled(b) && b.raceId && b.combos).length;
+    $('b-settle').textContent = pendingAuto ? `結果を自動反映（${pendingAuto}件）` : '結果を自動反映';
+    if (!list.length) { $('b-list').innerHTML = '<p class="empty">記録がありません。左のフォームから記録しましょう</p>'; return; }
+    const groups = [];
+    list.forEach((b) => {
+      const key = `${b.date}|${b.raceId || b.venue + b.race + b.name}`;
+      let g = groups.find((x) => x.key === key);
+      if (!g) { g = { key, head: b, bets: [] }; groups.push(g); }
+      g.bets.push(b);
+    });
+    $('b-list').innerHTML = groups.map((g) => {
+      const stake = g.bets.reduce((a, b) => a + Number(b.stake || 0), 0);
+      const settled = g.bets.every(S.isSettled);
+      const pay = g.bets.reduce((a, b) => a + Number(b.payout || 0), 0);
+      const h = g.head;
+      return `<div class="race-group">
+        <div class="rg-head"><span class="rg-date">${esc(h.date)}</span><b>${esc(h.venue || '')}${h.race ? esc(h.race) + 'R' : ''} ${esc(h.name || '')}</b>
+          <span class="rg-sum">${yen(stake)} → ${settled ? `<b class="${signCls(pay - stake)}">${yen(pay)}（${pay - stake >= 0 ? '+' : ''}${yen(pay - stake)}）</b>` : '<span class="tag pending">未確定あり</span>'}</span></div>
+        ${g.bets.map((b) => {
+          const st = S.isSettled(b);
+          const win = st && Number(b.payout) > 0;
+          return `<div class="bet-row ${win ? 'win' : st ? 'lose' : ''}" data-id="${esc(b.id)}">
+            <span class="type-chip">${esc(b.type)}</span>
+            <span class="bet-sel">${esc(b.sel)}${b.points > 1 ? `<small>（${b.points}点×${yen(b.unit)}）</small>` : ''}</span>
+            <span class="bet-stake">${yen(b.stake)}</span>
+            <span class="bet-res">${win ? `<span class="res win">的中</span> <b>${yen(b.payout)}</b>` : st ? '<span class="res lose">ハズレ</span>' : '<span class="res wait">未確定</span>'}</span>
+            <span class="bet-meta">${b.conf ? `自信${esc(b.conf)}` : ''}${b.ev ? ` 期待値${Number(b.ev).toFixed(2)}` : ''}${b.memo ? ` <span title="${esc(b.memo)}">📝</span>` : ''}</span>
+            <span class="bet-act">${st ? '' : '<button class="btn small" data-act="miss" title="払戻0円で確定">ハズレ</button>'}
+              <button class="btn small" data-act="edit">編集</button><button class="btn small ghost" data-act="del">✕</button></span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }).join('');
   }
 
   // =====================================================

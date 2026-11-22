@@ -6,11 +6,11 @@
   <title>競馬ノート</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" />
-  <link rel="stylesheet" href="css/style.css?v=2026.11.22-b" />
+  <link rel="stylesheet" href="css/style.css?v=2026.11.22-c" />
 </head>
 <body>
   <header class="app-header">
-    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.22-b</small></h1>
+    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.22-c</small></h1>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="predict">予想</button>
       <button class="tab" data-tab="log">馬券記録</button>
@@ -145,45 +145,73 @@
 
     <!-- ================= 馬券記録 ================= -->
     <section id="tab-log" class="panel">
-      <div class="card">
-        <h2 id="b-form-title">馬券を記録</h2>
-        <form id="b-form" class="grid-4">
+      <div class="log-layout">
+        <div class="card rec">
+          <div class="card-head"><h2 id="b-form-title">馬券を記録</h2><button class="btn small ghost" id="b-cancel">クリア</button></div>
           <input type="hidden" id="b-id" />
-          <label>日付<input type="date" id="b-date" required /></label>
-          <label>競馬場<select id="b-venue"></select></label>
-          <label>R<input type="number" id="b-race" min="1" max="12" /></label>
-          <label>レース名<input type="text" id="b-name" /></label>
-          <label>券種<select id="b-type"></select></label>
-          <label>買い目<input type="text" id="b-sel" placeholder="例: 3-7 / 1-3-5" required /></label>
-          <label>購入額(円)<input type="number" id="b-stake" min="100" step="100" required /></label>
-          <label>払戻額(円)<input type="number" id="b-payout" min="0" step="10" placeholder="未確定なら空欄" /></label>
-          <label>自信度<select id="b-conf"><option value="">-</option><option>A</option><option>B</option><option>C</option></select></label>
-          <label>予想EV<input type="number" id="b-ev" step="0.01" placeholder="例: 1.25" /></label>
-          <label class="span-2">メモ（根拠・反省）<input type="text" id="b-memo" /></label>
-          <div class="span-4 btn-row">
-            <button type="submit" class="btn primary" id="b-submit">記録する</button>
-            <button type="button" class="btn ghost" id="b-cancel">クリア</button>
-          </div>
-        </form>
-      </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>記録一覧</h2>
-          <div class="btn-row">
-            <input type="search" id="b-search" placeholder="検索（レース名・買い目・メモ）" />
-            <select id="b-filter">
-              <option value="all">すべて</option>
-              <option value="pending">未確定のみ</option>
-              <option value="hit">的中のみ</option>
-            </select>
-          </div>
+          <div class="step"><div class="step-no">1</div><div class="step-body">
+            <div class="step-title">レース</div>
+            <div class="fetch-row">
+              <label>日付<input type="date" id="b-date" /></label>
+              <label class="grow">レース<select id="b-racesel"><option value="">日付を選んでください</option></select></label>
+            </div>
+            <details id="b-manual-race"><summary>一覧にないレースを手入力</summary>
+              <div class="grid-3" style="margin-top:6px">
+                <label>競馬場<select id="b-venue"></select></label>
+                <label>R<input type="number" id="b-race" min="1" max="12" /></label>
+                <label>レース名<input type="text" id="b-name" /></label>
+              </div>
+            </details>
+          </div></div>
+
+          <div class="step"><div class="step-no">2</div><div class="step-body">
+            <div class="step-title">券種</div>
+            <div class="typegrid" id="b-types"></div>
+          </div></div>
+
+          <div class="step"><div class="step-no">3</div><div class="step-body">
+            <div class="step-title">買い目 <span class="seg" id="b-mode"><button data-m="normal" class="on">通常</button><button data-m="box">ボックス</button></span>
+              <span class="hint inline" id="b-mode-hint"></span></div>
+            <div class="horsegrid" id="b-horses"><p class="hint">レースを選ぶと出走馬が表示されます</p></div>
+            <div class="picked" id="b-picked"></div>
+            <label id="b-sel-wrap" class="hidden">買い目（手入力）<input type="text" id="b-sel" placeholder="例: 3-7 / 1→3→5" /></label>
+          </div></div>
+
+          <div class="step"><div class="step-no">4</div><div class="step-body">
+            <div class="step-title">金額</div>
+            <div class="amount-row">
+              <label>1点あたり<input type="number" id="b-unit" min="100" step="100" value="100" /></label>
+              <div class="quick" id="b-quick"><button data-v="100">100</button><button data-v="200">200</button><button data-v="500">500</button><button data-v="1000">1,000</button><button data-v="3000">3,000</button><button data-v="5000">5,000</button><button data-v="10000">1万</button></div>
+            </div>
+            <div class="total" id="b-total"></div>
+          </div></div>
+
+          <details class="more"><summary>払戻・自信度・メモ（任意）</summary>
+            <div class="grid-3" style="margin-top:6px">
+              <label>払戻額(円)<input type="number" id="b-payout" min="0" step="10" placeholder="空欄＝レース後に自動反映" /></label>
+              <label>自信度<select id="b-conf"><option value="">-</option><option>A</option><option>B</option><option>C</option></select></label>
+              <label>予想の期待値<input type="number" id="b-ev" step="0.01" placeholder="例: 1.25" /></label>
+              <label class="span-3">メモ（根拠・反省）<input type="text" id="b-memo" /></label>
+            </div>
+          </details>
+          <button class="btn primary big" id="b-submit">この内容で記録する</button>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>日付</th><th>レース</th><th>券種</th><th>買い目</th><th class="num">購入</th><th class="num">払戻</th><th class="num">収支</th><th>自信</th><th>EV</th><th>メモ</th><th></th></tr></thead>
-            <tbody id="b-list"></tbody>
-          </table>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>記録一覧</h2>
+            <div class="btn-row">
+              <button class="btn" id="b-settle">結果を自動反映</button>
+              <input type="search" id="b-search" placeholder="検索" />
+              <select id="b-filter">
+                <option value="all">すべて</option>
+                <option value="pending">未確定のみ</option>
+                <option value="hit">的中のみ</option>
+              </select>
+            </div>
+          </div>
+          <div id="b-list"></div>
         </div>
       </div>
     </section>
@@ -286,8 +314,9 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="js/model.js?v=2026.11.22-b"></script>
-  <script src="js/stats.js?v=2026.11.22-b"></script>
-  <script src="js/app.js?v=2026.11.22-b"></script>
+  <script src="js/model.js?v=2026.11.22-c"></script>
+  <script src="js/stats.js?v=2026.11.22-c"></script>
+  <script src="js/bets.js?v=2026.11.22-c"></script>
+  <script src="js/app.js?v=2026.11.22-c"></script>
 </body>
 </html>

@@ -429,3 +429,33 @@ def horse_features(runs, surface, distance, race_date):
         "runs": len(runs),
         "sameTop3": (sum(1 for r in same if r["place"] <= 3) + 0.5) / (len(same) + 2),  # 件数が少ないときは平均へ寄せる
     }
+
+
+# ---------------------------------------------------------------------------
+# 払戻（馬券の自動精算用）
+# ---------------------------------------------------------------------------
+PAYOUT_TYPES = {"Tansho": "単勝", "Fukusho": "複勝", "Wakuren": "枠連", "Umaren": "馬連",
+                "Wide": "ワイド", "Umatan": "馬単", "Fuku3": "3連複", "Tan3": "3連単"}
+
+
+def parse_payouts(html):
+    """result.html の払戻表 → {"単勝": [{"nos": [15], "pay": 180}], "ワイド": [...3組...], ...}（100円あたり）"""
+    out = {}
+    for cls, name in PAYOUT_TYPES.items():
+        m = re.search(r'<tr class="%s">.*?class="Result">(.*?)</td>.*?class="Payout">(.*?)</td>' % cls, html, re.S)
+        if not m:
+            continue
+        cell, pay_cell = m.group(1), m.group(2)
+        if "<ul" in cell:
+            combos = [[int(x) for x in re.findall(r"<span>(\d+)</span>", ul)] for ul in re.findall(r"<ul>(.*?)</ul>", cell, re.S)]
+        else:
+            combos = [[int(x)] for x in re.findall(r"<span>(\d+)</span>", cell)]
+        pays = [to_int(x) for x in re.split(r"<br\s*/?>", strip_tags_keep_br(pay_cell)) if to_int(x)]
+        combos = [c for c in combos if c]
+        if combos and len(combos) == len(pays):
+            out[name] = [{"nos": c, "pay": p} for c, p in zip(combos, pays)]
+    return out
+
+
+def strip_tags_keep_br(s):
+    return re.sub(r"<(?!br)[^>]+>", "", s or "")
