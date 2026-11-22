@@ -18,6 +18,7 @@
       date: today(), venue: '東京', race: 11, name: '',
       weight: 50, temp: 10, minev: 110, comboType: 'quinella', comboSort: 'p',
       raceId: '', comboOdds: {}, horseInfo: {}, trend: null,
+      method: 'learned', sort: 'no', editMode: false, raceMeta: {}, modelInfo: null,
       horses: [],
     },
   });
@@ -75,6 +76,22 @@
   // =====================================================
   const d = () => state.draft;
 
+  const WAKU_COLOR = { 1: ['#ffffff', '#222'], 2: ['#222222', '#fff'], 3: ['#e53935', '#fff'], 4: ['#1e63d6', '#fff'],
+    5: ['#f5c400', '#222'], 6: ['#2e9e4f', '#fff'], 7: ['#f08a00', '#fff'], 8: ['#f48fb1', '#222'] };
+
+  /** JRAの枠番の割り当て（外枠から順に頭数が増える） */
+  function wakuOf(no, n) {
+    if (n <= 8) return no;
+    const base = Math.floor(n / 8), extra = n % 8;
+    let start = 1;
+    for (let w = 1; w <= 8; w++) {
+      const size = base + (w > 8 - extra ? 1 : 0);
+      if (no < start + size) return w;
+      start += size;
+    }
+    return 8;
+  }
+
   function initPredict() {
     fillSelect($('p-venue'), VENUES);
     $('p-date').value = d().date;
@@ -85,20 +102,31 @@
     $('p-temp').value = d().temp;
     $('p-minev').value = d().minev;
     [['p-date', 'date'], ['p-venue', 'venue'], ['p-race', 'race'], ['p-name', 'name']].forEach(([id, k]) => {
-      $(id).addEventListener('change', (e) => { d()[k] = e.target.value; save(); });
+      $(id).addEventListener('change', (e) => { d()[k] = e.target.value; save(); renderBanner(); });
     });
     [['p-weight', 'weight'], ['p-temp', 'temp'], ['p-minev', 'minev']].forEach(([id, k]) => {
       $(id).addEventListener('input', (e) => { d()[k] = Number(e.target.value); save(); renderAnalysis(); });
     });
     $('p-ability').addEventListener('click', applyAbility);
+    $('p-edit').addEventListener('change', (e) => { d().editMode = e.target.checked; save(); renderHorses(); });
+    $('p-edit').checked = !!d().editMode;
+    $('p-method').addEventListener('click', (e) => {
+      if (!e.target.dataset.m) return;
+      d().method = e.target.dataset.m; save(); renderAnalysis();
+    });
+    $('p-sort').addEventListener('click', (e) => {
+      if (!e.target.dataset.s) return;
+      d().sort = e.target.dataset.s; save(); renderAnalysis();
+    });
     $('p-add').addEventListener('click', () => {
       const next = d().horses.reduce((m, h) => Math.max(m, Number(h.no) || 0), 0) + 1;
       d().horses.push({ no: next, name: '', odds: '', score: 50 });
+      d().editMode = true; $('p-edit').checked = true;
       save(); renderHorses();
     });
     $('p-clear').addEventListener('click', () => {
       if (!confirm('出走馬リストをクリアしますか？')) return;
-      d().horses = []; save(); renderHorses();
+      d().horses = []; d().horseInfo = {}; d().raceId = ''; d().trend = null; save(); renderHorses(); renderTrend(); renderBanner();
     });
     $('p-paste').addEventListener('click', () => $('p-paste-box').classList.toggle('hidden'));
     $('p-paste-apply').addEventListener('click', () => {
@@ -119,24 +147,33 @@
     });
 
     const tb = $('p-horses');
-    tb.addEventListener('input', (e) => {
-      const tr = e.target.closest('tr'); if (!tr) return;
+    tb.addEventListener('change', (e) => {
+      const tr = e.target.closest('tr'); if (!tr || !e.target.dataset.f) return;
       const h = d().horses[Number(tr.dataset.i)];
       const f = e.target.dataset.f;
       h[f] = f === 'name' ? e.target.value : e.target.value === '' ? '' : Number(e.target.value);
-      if (f === 'score') tr.querySelectorAll('.mark').forEach((m) => m.classList.toggle('on', Number(m.dataset.v) === h.score));
       save(); renderAnalysis();
     });
     tb.addEventListener('click', (e) => {
       const tr = e.target.closest('tr'); if (!tr) return;
       const i = Number(tr.dataset.i);
-      if (e.target.classList.contains('mark')) {
-        const v = Number(e.target.dataset.v);
+      const btn = e.target.closest('button'); if (!btn) return;
+      if (btn.classList.contains('mark')) {
+        const v = Number(btn.dataset.v);
         d().horses[i].score = d().horses[i].score === v ? 50 : v;
-        save(); renderHorses();
-      } else if (e.target.dataset.act === 'del') {
+        if (d().method === 'learned') toast('印は「自分の印」モードの予想に使われます');
+        save(); renderAnalysis();
+      } else if (btn.dataset.act === 'del') {
         d().horses.splice(i, 1); save(); renderHorses();
+      } else if (btn.dataset.act === 'rec') {
+        prefillBet({ type: '単勝', sel: tr.dataset.no, ev: Number(tr.dataset.ev), stake: Number(tr.dataset.bet) || '' });
+      } else if (btn.dataset.act === 'more') {
+        tr.nextElementSibling.classList.toggle('hidden');
       }
+    });
+    $('s-summary').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act=rec]'); if (!btn) return;
+      prefillBet({ type: btn.dataset.type, sel: btn.dataset.sel, ev: Number(btn.dataset.ev), stake: Number(btn.dataset.bet) || '' });
     });
 
     $('p-combo-type').innerHTML = Object.entries(COMBO_TO_BET)
@@ -157,8 +194,7 @@
       const o = Number(e.target.value);
       const cell = tr.querySelector('.ev');
       const ev = o > 0 ? p * o : null;
-      cell.textContent = ev ? ev.toFixed(2) : '-';
-      cell.className = 'num ev ' + (ev && ev >= d().minev / 100 ? 'pos' : ev ? 'neg' : '');
+      cell.innerHTML = ev ? evBadge(ev) : '-';
     });
     $('p-combos').addEventListener('click', (e) => {
       if (e.target.dataset.act !== 'rec') return;
@@ -167,21 +203,31 @@
       const p = Number(tr.dataset.p);
       prefillBet({ type: COMBO_TO_BET[d().comboType], sel: tr.dataset.sel, ev: o > 0 ? p * o : '' });
     });
-    $('p-result').addEventListener('click', (e) => {
-      if (e.target.dataset.act !== 'rec') return;
-      const tr = e.target.closest('tr');
-      prefillBet({ type: '単勝', sel: tr.dataset.no, ev: Number(tr.dataset.ev), stake: Number(tr.dataset.bet) || '' });
-    });
     renderHorses();
+    renderBanner();
   }
 
-  function starsHtml(n) {
-    if (!n) return '<span class="hint" title="過去走なし">-</span>';
-    return `<span class="stars">${'★'.repeat(n)}<span class="off">${'★'.repeat(5 - n)}</span></span>`;
+  // ---------- 表示部品 ----------
+  function starsHtml(n, big) {
+    if (!n) return '<span class="hint" title="過去走なし">データなし</span>';
+    return `<span class="stars ${big ? 'big' : ''}">${'★'.repeat(n)}<span class="off">${'★'.repeat(5 - n)}</span></span>`;
   }
   function recentHtml(list) {
-    if (!list || !list.length) return '<span class="hint">初出走</span>';
-    return `<span class="recent">${list.map((p) => (p == null ? '止' : p <= 3 ? `<b>${p}</b>` : p)).join('-')}</span>`;
+    if (!list || !list.length) return '<span class="dots"><span class="hint">初出走</span></span>';
+    return `<span class="dots" title="近5走の着順（左が古い→右が前走）">${list.slice().reverse().map((p) => {
+      const c = p == null ? 'x' : p === 1 ? 'p1' : p <= 3 ? 'p3' : p <= 5 ? 'p5' : '';
+      return `<i class="dot ${c}" title="${p == null ? '中止' : p + '着'}">${p == null ? '止' : p}</i>`;
+    }).join('')}</span>`;
+  }
+  function wakuBadge(w, no) {
+    const [bg, fg] = WAKU_COLOR[w] || ['#ccc', '#222'];
+    return `<span class="umaban" style="background:${bg};color:${fg}" title="${w}枠">${esc(no)}</span>`;
+  }
+  function evBadge(ev) {
+    const minEv = d().minev / 100;
+    if (ev >= minEv) return `<span class="ev-badge hot" title="期待値 ${ev.toFixed(2)}">${ev >= minEv * 1.3 ? '🔥' : ''}${ev.toFixed(2)}</span>`;
+    if (ev >= 1) return `<span class="ev-badge warm">${ev.toFixed(2)}</span>`;
+    return `<span class="ev-badge cold">${ev.toFixed(2)}</span>`;
   }
   /** 過去10年の枠別3着内率から、その枠が有利(good)/不利(bad)か */
   function wakuClass(w) {
@@ -196,51 +242,201 @@
   function styleClass(style) {
     const t = d().trend && d().trend.trend;
     if (!t || !t.bestStyle || !style) return '';
-    return t.bestStyle.startsWith(style[0]) ? 'style-good' : '';
+    return t.bestStyle.startsWith(style[0]) ? 'good' : '';
   }
 
-  function renderHorses() {
-    const info = d().horseInfo || {};
-    const rows = d().horses.map((h, i) => {
-      const x = info[h.no] || {};
-      const tip = (x.runs || []).map((r) => `${r.date} ${r.venue} ${r.race}(${r.class}) ${r.surface}${r.distance || ''} ${r.place ?? '中止'}着 ${r.margin != null ? r.margin + '秒差' : ''}`).join('\n');
-      return `
-      <tr data-i="${i}">
-        <td><input type="number" data-f="no" value="${esc(h.no)}" min="1" max="18" /></td>
-        <td>${x.waku ? `<span class="waku ${wakuClass(x.waku)}" title="過去10年の傾向で色付け">${x.waku}</span>` : ''}</td>
-        <td><input type="text" data-f="name" value="${esc(h.name)}" placeholder="馬名" /></td>
-        <td title="${esc(tip)}">${x.rating !== undefined ? starsHtml(x.stars) + (x.rating ? `<span class="rating">${x.rating}</span>` : '') : ''}</td>
-        <td title="${esc(tip)}">${x.rating !== undefined ? recentHtml(x.recent) : ''}</td>
-        <td class="${styleClass(x.style)}">${esc(x.style || '')}</td>
-        <td><input type="number" data-f="odds" value="${esc(h.odds)}" step="0.1" min="1" placeholder="例 5.4" /></td>
-        <td><div class="marks">${MARKS.map(([m, v]) => `<button class="btn mark ${h.score === v ? 'on' : ''}" data-v="${v}" title="スコア${v}">${m}</button>`).join('')}</div></td>
-        <td><input type="number" data-f="score" value="${esc(h.score)}" min="0" max="100" /></td>
-        <td><button class="btn small ghost" data-act="del" title="削除">✕</button></td>
-      </tr>`;
-    }).join('');
-    $('p-horses').innerHTML = rows || '<tr><td colspan="10" class="empty">「＋ 馬を追加」か「一括入力」、またはオッズ自動取得で出走馬を登録</td></tr>';
-    renderAnalysis();
+  // ---------- レースのバナー ----------
+  function renderBanner() {
+    const info = Object.values(d().horseInfo || {});
+    const meta = d().raceMeta || {};
+    const g = meta.grade || '';
+    $('r-grade').textContent = g;
+    $('r-grade').className = 'grade ' + (g ? g.toLowerCase() : 'none');
+    $('r-name').textContent = d().name || 'レースを選んでください';
+    const sub = [d().date, d().venue && d().race ? `${d().venue}${d().race}R` : '', meta.course, d().horses.length ? `${d().horses.length}頭` : ''].filter(Boolean);
+    $('r-sub').textContent = sub.length > 1 ? sub.join('　') : '重賞を選んで「取得」を押すと、出走馬・オッズ・能力・過去10年の傾向をまとめて表示します';
+    const t = d().trend && d().trend.race_id === d().raceId ? d().trend.trend : null;
+    const chips = [];
+    if (t) {
+      const fav = t.favorite, n = fav.reduce((a, b) => a + b, 0);
+      chips.push(`<span class="chip">荒れ度 ${starsHtml(t.roughStars)}</span>`);
+      if (n) chips.push(`<span class="chip">1番人気 <b>${fav[0] + fav[1] + fav[2]}/${n}</b> 回3着内</span>`);
+      chips.push(`<span class="chip">枠 <b>${esc(t.inoutBias)}</b></span>`);
+      if (t.bestStyle) chips.push(`<span class="chip">有利な脚質 <b>${esc(t.bestStyle)}</b></span>`);
+      if (t.winnerPopAvg) chips.push(`<span class="chip">勝ち馬の平均 <b>${t.winnerPopAvg}</b>番人気</span>`);
+    } else if (info.length) {
+      chips.push('<span class="chip muted">過去10年の傾向を読み込み中…</span>');
+    }
+    $('r-chips').innerHTML = chips.join('');
   }
+
+  function renderHorses() { renderAnalysis(); }
 
   /** 能力値 → スコア(0〜100)。メンバー内の偏差で換算 */
   function applyAbility() {
     const info = d().horseInfo || {};
     const vals = d().horses.map((h) => (info[h.no] || {}).rating).filter((v) => v != null);
-    if (vals.length < 2) { toast('先にオッズ取得で能力値を読み込んでください'); return; }
+    if (vals.length < 2) { toast('先にレースを取得して能力値を読み込んでください'); return; }
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
     const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length) || 1;
     d().horses.forEach((h) => {
       const r = (info[h.no] || {}).rating;
       h.score = r == null ? 45 : Math.round(Math.max(10, Math.min(95, 50 + ((r - mean) / sd) * 15)));
     });
-    save(); renderHorses();
-    toast('能力値をスコアに反映しました（印で微調整できます）');
+    save(); renderAnalysis();
+    toast('能力値からスコアをセットしました（印で微調整できます）');
+  }
+
+  // ---------- 分析（出馬表・まとめ・組み合わせ） ----------
+  function useLearned() {
+    return d().method !== 'manual' && d().modelInfo && d().modelInfo.raceId === d().raceId;
+  }
+
+  function renderAnalysis() {
+    $('o-weight').textContent = d().weight + '%';
+    $('o-temp').textContent = d().temp;
+    $('o-minev').textContent = (d().minev / 100).toFixed(2);
+    const learned = useLearned();
+    const method = learned ? 'learned' : 'manual';
+    document.querySelectorAll('#p-method button').forEach((b) => b.classList.toggle('on', b.dataset.m === method));
+    $('p-manual-opts').classList.toggle('hidden', learned);
+    $('p-method-hint').innerHTML = learned
+      ? `過去データから学習したモデル（${esc(d().modelInfo.trainedAt || '')}まで・${d().modelInfo.races}レースで学習）で勝率を推定。印は表示用です。`
+      : d().method !== 'manual'
+        ? '学習モデルは未設定です。検証タブで学習し「予想に使う」を押すと使えます。今は自分の印で予想しています。'
+        : '印（◎○▲△×）とオッズを合成して勝率を推定します。';
+    document.querySelectorAll('#p-combo-type button').forEach((b) => b.classList.toggle('on', b.dataset.k === d().comboType));
+    document.querySelectorAll('#p-combo-sort button').forEach((b) => b.classList.toggle('on', b.dataset.s === (d().comboSort || 'p')));
+    const sort = d().sort || 'no';
+    document.querySelectorAll('#p-sort button').forEach((b) => b.classList.toggle('on', b.dataset.s === sort));
+
+    const info = d().horseInfo || {};
+    const edit = !!d().editMode;
+    const n = d().horses.length;
+    const valid = d().horses
+      .map((h) => ({ no: h.no, name: h.name, odds: Number(h.odds), score: Number(h.score) || 0, ownU: (info[h.no] || {}).ownU }))
+      .filter((h) => h.odds > 1);
+    const st = state.settings;
+    const minEv = d().minev / 100;
+    const res = valid.length >= 2
+      ? M.analyze(valid, { weight: d().weight / 100, temperature: d().temp, bankroll: st.bankroll, kellyFraction: st.kelly,
+        learned: learned ? { betaMarket: d().modelInfo.betaMarket } : null })
+      : null;
+    const byNo = res ? Object.fromEntries(res.rows.map((r) => [r.no, r])) : {};
+    $('p-overround').textContent = res ? `控除率 ${pct(res.overround, 0)}` : '';
+
+    // ---- 出馬表 ----
+    const maxP = res ? Math.max(...res.rows.map((r) => Math.max(r.p, r.pMarket))) : 1;
+    const order = d().horses.map((h, i) => ({ h, i, r: byNo[h.no] }));
+    if (sort === 'ev') order.sort((a, b) => (b.r ? b.r.ev : -1) - (a.r ? a.r.ev : -1));
+    else if (sort === 'p') order.sort((a, b) => (b.r ? b.r.p : -1) - (a.r ? a.r.p : -1));
+    else order.sort((a, b) => a.h.no - b.h.no);
+    const pops = res ? Object.fromEntries(res.rows.slice().sort((a, b) => a.odds - b.odds).map((r, k) => [r.no, k + 1])) : {};
+
+    $('p-horses').innerHTML = order.map(({ h, i, r }) => {
+      const x = info[h.no] || {};
+      const w = x.waku || wakuOf(Number(h.no), n);
+      const buy = r && r.ev >= minEv;
+      const bet = r ? Math.min(r.kellyBet, st.cap || Infinity) : 0;
+      const runs = (x.runs || []).map((run) => `<tr><td>${esc(run.date)}</td><td>${esc(run.venue)}</td><td>${esc(run.race)} <small>${esc(run.class)}</small></td>
+        <td>${esc(run.surface)}${run.distance || ''}</td><td class="num"><b>${run.place ?? '中止'}</b>着/${run.field || '-'}頭</td>
+        <td class="num">${run.pop ?? '-'}人気</td><td class="num">${run.margin != null ? run.margin.toFixed(1) + '秒' : ''}</td><td>${esc(run.style || '')}</td></tr>`).join('');
+      return `
+      <tr data-i="${i}" data-no="${esc(h.no)}" data-ev="${r ? r.ev.toFixed(2) : ''}" data-bet="${buy ? bet : 0}" class="horse ${buy ? 'buy' : ''}">
+        <td class="c-ban">${edit ? `<input class="plain w-no" type="number" data-f="no" value="${esc(h.no)}" />` : wakuBadge(w, h.no)}
+          ${wakuClass(w) ? `<span class="waku-tip ${wakuClass(w)}" title="過去10年でこの枠は${wakuClass(w) === 'good' ? '好成績' : '不振'}">${wakuClass(w) === 'good' ? '◎枠' : '△枠'}</span>` : ''}</td>
+        <td class="c-name">
+          ${edit ? `<input class="plain w-name" data-f="name" value="${esc(h.name)}" placeholder="馬名" />` : `<div class="hname">${esc(h.name) || '<span class="hint">馬名未入力</span>'}</div>`}
+          <div class="hsub">${x.rating !== undefined ? recentHtml(x.recent) : ''}
+            ${x.style ? `<span class="style-chip ${styleClass(x.style)}" title="脚質">${esc(x.style)}</span>` : ''}
+            ${runs ? '<button class="link" data-act="more">近走</button>' : ''}</div>
+        </td>
+        <td class="c-abil">${x.rating !== undefined ? starsHtml(x.stars, true) + (x.rating ? `<div class="rating">指数 ${x.rating}</div>` : '') : '<span class="hint">-</span>'}</td>
+        <td class="num c-odds">${edit ? `<input class="plain w-odds" type="number" step="0.1" data-f="odds" value="${esc(h.odds)}" />`
+          : `<div class="odds">${r ? r.odds.toFixed(1) : '-'}</div><div class="pop">${pops[h.no] ? pops[h.no] + '番人気' : ''}</div>`}</td>
+        <td class="c-prob">${r ? `<div class="pbar" title="オッズ ${pct(r.pMarket)} / 予想 ${pct(r.p)}">
+            <span class="me" style="width:${(r.p / maxP) * 100}%"></span><i class="mkt" style="left:${(r.pMarket / maxP) * 100}%"></i></div>
+            <div class="pval"><b>${pct(r.p)}</b> <span class="${r.p > r.pMarket * 1.15 ? 'up' : r.p < r.pMarket * 0.85 ? 'down' : ''}">${r.p > r.pMarket * 1.15 ? '▲' : r.p < r.pMarket * 0.85 ? '▼' : ''}</span></div>` : ''}</td>
+        <td class="num c-ev">${r ? evBadge(r.ev) : ''}${buy && bet > 0 ? `<div class="kelly">推奨 ${yen(bet)}</div>` : ''}</td>
+        <td class="c-mark"><div class="marks">${MARKS.map(([m, v]) => `<button class="mark ${Number(h.score) === v ? 'on' : ''}" data-v="${v}" title="スコア${v}">${m}</button>`).join('')}</div>
+          ${edit ? `<input class="plain w-score" type="number" data-f="score" value="${esc(h.score)}" title="スコア" />` : ''}</td>
+        <td class="c-act">${r ? '<button class="btn small" data-act="rec" title="単勝を記録">記録</button>' : ''}${edit ? '<button class="btn small ghost" data-act="del">✕</button>' : ''}</td>
+      </tr>
+      ${runs ? `<tr class="runs hidden"><td></td><td colspan="7"><table class="mini">${runs}</table></td></tr>` : ''}`;
+    }).join('') || '<tr><td colspan="8" class="empty">上で重賞を選んで「取得」を押してください（手入力もできます）</td></tr>';
+
+    renderSummary(res);
+    renderBanner();
+
+    // ---- 組み合わせ ----
+    if (!res) { $('p-combos').innerHTML = '<tr><td colspan="7" class="empty">出走馬を取得すると表示します</td></tr>'; return; }
+    const type = d().comboType;
+    const ordered = type === 'exacta' || type === 'trifecta';
+    const rawOdds = (d().comboOdds || {})[type];
+    const real = rawOdds && rawOdds.__rid === d().raceId ? rawOdds : null;
+    let list = res.combos[type].map((c) => {
+      const nos = ordered ? c.nos : c.nos.slice().sort((a, b) => a - b);
+      const o = real ? real[nos.join('-')] : undefined;
+      return { ...c, nos, real: o, ev: o ? c.p * o : null };
+    });
+    if (d().comboSort === 'ev') list = list.filter((c) => c.ev !== null).sort((a, b) => b.ev - a.ev);
+    list = list.slice(0, 15);
+    if (!list.length) { $('p-combos').innerHTML = '<tr><td colspan="7" class="empty">期待値順は実オッズの取得後に使えます</td></tr>'; return; }
+    $('p-combos').innerHTML = list.map((c) => {
+      const sel = c.nos.join(ordered ? '→' : '-');
+      const badges = c.nos.map((no) => wakuBadge((info[no] || {}).waku || wakuOf(no, n), no)).join(ordered ? '<span class="arrow">→</span>' : '');
+      return `<tr data-p="${c.p}" data-sel="${esc(sel)}" class="${c.ev !== null && c.ev >= minEv ? 'buy' : ''}">
+        <td><span class="combo">${badges}</span></td>
+        <td class="num">${pct(c.p, 2)}</td>
+        <td class="num">${c.fairOdds.toFixed(1)}</td>
+        <td class="num">${(c.fairOdds * minEv).toFixed(1)}倍〜</td>
+        <td><input class="plain w-odds" type="number" data-f="odds" step="0.1" min="1" placeholder="実オッズ" value="${c.real || ''}" /></td>
+        <td class="num ev">${c.ev !== null ? evBadge(c.ev) : '-'}</td>
+        <td><button class="btn small" data-act="rec">記録</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ---------- 予想のまとめ（サイド） ----------
+  function renderSummary(res) {
+    const box = $('s-summary');
+    if (!res) { box.innerHTML = '<h2>予想のまとめ</h2><p class="hint">出走馬を取得すると、本命・妙味馬・おすすめの買い目が出ます。</p>'; return; }
+    const info = d().horseInfo || {};
+    const n = d().horses.length;
+    const minEv = d().minev / 100;
+    const st = state.settings;
+    const byP = res.rows.slice().sort((a, b) => b.p - a.p);
+    const byEv = res.rows.slice().sort((a, b) => b.ev - a.ev);
+    const honmei = byP[0], taikou = byP[1];
+    const value = byEv.find((r) => r.ev >= minEv && r !== honmei && r !== taikou);
+    const ana = byEv.find((r) => r.ev >= minEv && r.odds >= 15 && r !== value && r !== honmei);
+    const pick = (label, cls, r, note) => r ? `
+      <div class="pick ${cls}">
+        <div class="pick-label">${label}</div>
+        <div class="pick-body">${wakuBadge((info[r.no] || {}).waku || wakuOf(r.no, n), r.no)}<span class="pick-name">${esc(r.name)}</span></div>
+        <div class="pick-meta">単勝 <b>${r.odds.toFixed(1)}</b>倍・勝率 <b>${pct(r.p, 0)}</b>・期待値 ${evBadge(r.ev)}${note ? `<div class="hint">${note}</div>` : ''}</div>
+      </div>` : '';
+    const buys = byEv.filter((r) => r.ev >= minEv).map((r) => ({ r, bet: Math.min(r.kellyBet, st.cap || Infinity) })).filter((x) => x.bet > 0);
+    const total = buys.reduce((a, x) => a + x.bet, 0);
+    box.innerHTML = `
+      <h2>予想のまとめ</h2>
+      <div class="picks">
+        ${pick('◎ 本命', 'p-honmei', honmei, '推定勝率が最も高い馬')}
+        ${pick('○ 対抗', 'p-taikou', taikou, '')}
+        ${value ? pick('🔥 妙味', 'p-value', value, 'オッズの割に勝率が高い＝期待値が高い') : byEv.some((r) => r.ev >= minEv) ? '' : '<div class="pick none">期待値が基準を超える馬はいません。<br><b>見送り</b>も立派な戦略です</div>'}
+        ${ana ? pick('💥 穴', 'p-ana', ana, '15倍以上で期待値が高い') : ''}
+      </div>
+      ${buys.length ? `<div class="buy-list"><div class="bl-head">おすすめ単勝（ケリー基準）<span>計 ${yen(total)}</span></div>
+        ${buys.map(({ r, bet }) => `<div class="bl-row">${wakuBadge((info[r.no] || {}).waku || wakuOf(r.no, n), r.no)}<span class="bl-name">${esc(r.name)}</span>
+          <b>${yen(bet)}</b><button class="btn small" data-act="rec" data-type="単勝" data-sel="${esc(r.no)}" data-ev="${r.ev.toFixed(2)}" data-bet="${bet}">記録</button></div>`).join('')}
+      </div>` : ''}`;
   }
 
   // ---------- レース傾向 ----------
   function renderTrend() {
     const box = $('t-body');
     const data = d().trend;
+    renderBanner();
     if (!data || data.race_id !== d().raceId) { $('t-mode').textContent = ''; return; }
     const t = data.trend;
     $('t-mode').textContent = data.mode === 'same_race'
@@ -288,77 +484,6 @@
           <td class="num">${y.winnerPop ?? '-'}</td><td class="num">${y.winnerWaku ?? '-'}</td><td>${esc(y.winnerStyle || '')}</td>
           <td class="num">${y.umaren ? yen(y.umaren) : '-'}</td><td class="num">${y.tan3 ? yen(y.tan3) : '-'}</td></tr>`).join('')}</tbody>
       </table></div></details>`;
-  }
-
-  function renderAnalysis() {
-    $('o-weight').textContent = d().weight + '%';
-    $('o-temp').textContent = d().temp;
-    $('o-minev').textContent = (d().minev / 100).toFixed(2);
-    document.querySelectorAll('#p-combo-type button').forEach((b) => b.classList.toggle('on', b.dataset.k === d().comboType));
-    document.querySelectorAll('#p-combo-sort button').forEach((b) => b.classList.toggle('on', b.dataset.s === (d().comboSort || 'p')));
-
-    const horses = d().horses
-      .map((h) => ({ no: h.no, name: h.name, odds: Number(h.odds), score: Number(h.score) || 0 }))
-      .filter((h) => h.odds > 1);
-    if (horses.length < 2) {
-      $('p-result').innerHTML = '<tr><td colspan="10" class="empty">オッズ入力済みの馬が2頭以上になると分析します</td></tr>';
-      $('p-combos').innerHTML = '';
-      $('p-overround').textContent = '';
-      return;
-    }
-    const st = state.settings;
-    const res = M.analyze(horses, { weight: d().weight / 100, temperature: d().temp, bankroll: st.bankroll, kellyFraction: st.kelly });
-    const minEv = d().minev / 100;
-    $('p-overround').textContent = `オッズから見た控除率 ${pct(res.overround)}（JRA単勝の規定は20%）`;
-
-    $('p-result').innerHTML = res.rows
-      .slice().sort((a, b) => b.ev - a.ev)
-      .map((r) => {
-        const buy = r.ev >= minEv;
-        const bet = Math.min(r.kellyBet, st.cap || Infinity);
-        return `<tr class="${buy ? 'buy' : ''}" data-no="${esc(r.no)}" data-ev="${r.ev.toFixed(2)}" data-bet="${buy ? bet : 0}">
-          <td>${esc(r.no)}</td><td>${esc(r.name)}</td>
-          <td class="num">${r.odds.toFixed(1)}</td>
-          <td class="num">${pct(r.pMarket)}</td>
-          <td class="num">${pct(r.pModel)}</td>
-          <td class="num"><b>${pct(r.p)}</b></td>
-          <td class="num ${buy ? 'pos' : r.ev < 1 ? 'neg' : ''}"><b>${r.ev.toFixed(2)}</b> ${buy ? '<span class="tag buy">買い</span>' : ''}</td>
-          <td class="num">${pct(r.pPlace)}</td>
-          <td class="num">${buy && bet > 0 ? yen(bet) : '-'}</td>
-          <td><button class="btn small" data-act="rec">記録へ</button></td>
-        </tr>`;
-      }).join('');
-
-    const type = d().comboType;
-    const ordered = type === 'exacta' || type === 'trifecta';
-    const rawOdds = (d().comboOdds || {})[type];
-    const real = rawOdds && rawOdds.__rid === d().raceId ? rawOdds : null;
-    let list = res.combos[type].map((c) => {
-      const nos = ordered ? c.nos : c.nos.slice().sort((a, b) => a - b);
-      const o = real ? real[nos.join('-')] : undefined;
-      return { ...c, nos, real: o, ev: o ? c.p * o : null };
-    });
-    if (d().comboSort === 'ev') {
-      list = list.filter((c) => c.ev !== null).sort((a, b) => b.ev - a.ev);
-    }
-    list = list.slice(0, 20);
-    if (!list.length) {
-      $('p-combos').innerHTML = '<tr><td colspan="7" class="empty">EV順は実オッズの取得後に使えます</td></tr>';
-      return;
-    }
-    $('p-combos').innerHTML = list.map((c) => {
-      const sel = c.nos.join(ordered ? '→' : '-');
-      const evCls = c.ev === null ? '' : c.ev >= minEv ? 'pos' : 'neg';
-      return `<tr data-p="${c.p}" data-sel="${esc(sel)}" class="${c.ev !== null && c.ev >= minEv ? 'buy' : ''}">
-        <td><b>${esc(sel)}</b></td>
-        <td class="num">${pct(c.p, 2)}</td>
-        <td class="num">${c.fairOdds.toFixed(1)}</td>
-        <td class="num">${(c.fairOdds * minEv).toFixed(1)}倍〜</td>
-        <td><input type="number" data-f="odds" step="0.1" min="1" style="width:80px" placeholder="実オッズ" value="${c.real || ''}" /></td>
-        <td class="num ev ${evCls}">${c.ev !== null ? c.ev.toFixed(2) : '-'}</td>
-        <td><button class="btn small" data-act="rec">記録へ</button></td>
-      </tr>`;
-    }).join('');
   }
 
   // =====================================================
@@ -627,33 +752,40 @@
     function init() {
       $('f-date').value = d().date || today();
       if (location.protocol === 'file:') {
-        ['f-list', 'f-fetch', 'f-race', 'f-auto', 't-load'].forEach((id) => { $(id).disabled = true; });
+        ['f-fetch', 'f-race', 'f-auto', 't-load', 'f-date'].forEach((id) => { $(id).disabled = true; });
+        $('f-race').innerHTML = '<option>サーバー未起動（手入力モード）</option>';
         $('f-hint').innerHTML = '自動取得を使うには、ターミナルで <code>python3 server.py</code> を実行し <b>http://localhost:8765</b> を開いてください。';
         return;
       }
       api('/api/ping').then((r) => status(r.provider === 'MockProvider' ? 'モックデータで接続中' : '接続OK', 'ok'))
         .catch(() => status('サーバーに接続できません', 'err'));
-      $('f-list').addEventListener('click', listRaces);
+      $('f-date').addEventListener('change', listRaces);
+      $('f-race').addEventListener('change', () => { if ($('f-race').value && $('f-race').value !== d().raceId) win(true); });
       $('t-load').addEventListener('click', trend);
       $('f-fetch').addEventListener('click', () => win(true));
       $('f-auto').addEventListener('change', (e) => {
         clearInterval(timer);
         if (e.target.checked) timer = setInterval(() => { win(false).then(() => combos(false)); }, 60000);
       });
-      if (d().raceId) {
-        $('f-race').innerHTML = `<option value="${esc(d().raceId)}">${esc(d().venue)}${esc(d().race)}R ${esc(d().name)}</option>`;
-      }
+      listRaces();
     }
 
+    let raceList = [];
     async function listRaces() {
-      status('レース一覧を取得中…');
+      status('重賞を検索中…');
+      $('f-race').innerHTML = '<option value="">読み込み中…</option>';
       try {
         const { races } = await api(`/api/races?date=${ymd()}`);
-        if (!races.length) { status('この日のJRA開催はありません', 'err'); return; }
-        $('f-race').innerHTML = races.map((r) =>
-          `<option value="${esc(r.race_id)}">${esc(r.venue)} ${r.race}R ${esc(r.name)}</option>`).join('');
-        if (races.some((r) => r.race_id === d().raceId)) $('f-race').value = d().raceId;
-        status(`${races.length}レース`, 'ok');
+        raceList = races.filter((r) => ['G1', 'G2', 'G3'].includes(r.grade))
+          .sort((a, b) => a.grade.localeCompare(b.grade) || a.venue.localeCompare(b.venue));
+        if (!raceList.length) {
+          $('f-race').innerHTML = `<option value="">${races.length ? 'この日は重賞がありません' : 'この日はJRAの開催がありません'}</option>`;
+          status('', ''); return;
+        }
+        $('f-race').innerHTML = '<option value="">重賞を選んでください</option>' + raceList.map((r) =>
+          `<option value="${esc(r.race_id)}">【${esc(r.grade)}】${esc(r.name)}（${esc(r.venue)}${r.race}R ${esc(r.course)}）</option>`).join('');
+        if (raceList.some((r) => r.race_id === d().raceId)) $('f-race').value = d().raceId;
+        status(`重賞 ${raceList.length}レース`, 'ok');
       } catch (e) { status('一覧の取得失敗: ' + e.message, 'err'); }
     }
 
@@ -664,7 +796,7 @@
       try {
         const r = await api(`/api/odds?race_id=${rid}&type=win`);
         const prev = new Map(d().horses.map((h) => [Number(h.no), h]));
-        if (rid !== d().raceId) { d().comboOdds = {}; d().horseInfo = {}; d().trend = null; prev.clear(); }
+        if (rid !== d().raceId) { d().comboOdds = {}; d().horseInfo = {}; d().trend = null; d().modelInfo = null; d().raceMeta = {}; prev.clear(); }
         d().horses = r.horses.filter((h) => h.odds).map((h) => ({
           no: h.no,
           name: h.name || (prev.get(h.no) || {}).name || '',
@@ -672,7 +804,9 @@
           score: (prev.get(h.no) || {}).score ?? 50,
         }));
         const scratched = r.horses.filter((h) => !h.odds).map((h) => h.no);
+        const meta = raceList.find((x) => x.race_id === rid);
         Object.assign(d(), { raceId: rid, venue: r.venue, race: r.race, name: r.name || d().name, date: $('f-date').value });
+        if (meta) d().raceMeta = { grade: meta.grade, course: meta.course };
         $('p-venue').value = r.venue; $('p-race').value = r.race; $('p-name').value = d().name; $('p-date').value = d().date;
         save(); renderHorses();
         status(`単勝 ${r.updated || ''} 時点${scratched.length ? ` / 取消・オッズなし: ${scratched.join(',')}番` : ''}`, 'ok');
@@ -697,6 +831,8 @@
       try {
         const r = await api(`/api/horses?race_id=${rid}&date=${(d().date || today()).replace(/-/g, "")}`);
         d().horseInfo = Object.fromEntries(r.horses.map((h) => [h.no, h]));
+        d().modelInfo = r.model ? { ...r.model, raceId: rid } : null;
+        if (!d().raceMeta.course && r.course) d().raceMeta = { ...d().raceMeta, course: r.course, grade: r.grade || d().raceMeta.grade };
         save(); renderHorses();
       } catch (e) { status('能力値の取得失敗: ' + e.message, 'err'); }
     }
@@ -877,11 +1013,96 @@
     return { init };
   })();
 
+  // =====================================================
+  // 学習モデル
+  // =====================================================
+  const Learn = (() => {
+    function init() {
+      if (location.protocol === 'file:') { $('lm-run').disabled = true; $('lm-off').disabled = true; return; }
+      $('lm-run').addEventListener('click', run);
+      $('lm-off').addEventListener('click', async () => {
+        await fetch('/api/learn/off'); toast('学習モデルの使用をやめました'); status();
+        d().modelInfo = null; save(); renderAnalysis();
+      });
+      $('lm-result').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-act]'); if (!btn) return;
+        if (btn.dataset.act === 'use' || btn.dataset.act === 'force') {
+          const res = await fetch('/api/learn/use' + (btn.dataset.act === 'force' ? '?force=1' : ''));
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) { toast(body.error || '保存できませんでした'); return; }
+          toast('学習モデルを予想に使います。予想タブでレースを取得し直してください');
+          d().method = 'learned'; save(); status();
+        }
+      });
+      status();
+    }
+    async function status() {
+      try {
+        const r = await (await fetch('/api/learn/status')).json();
+        $('lm-status').textContent = r.model ? `使用中: ${r.model.from}〜${r.model.trainedAt}・${r.model.races}レースで学習` : '学習モデルは未使用';
+        $('lm-status').className = 'badge ' + (r.model ? 'ok' : '');
+        if (r.learned && !$('lm-result').innerHTML) render(r.learned);
+      } catch (e) { /* サーバー未起動 */ }
+    }
+    async function run() {
+      $('lm-run').disabled = true;
+      $('lm-result').innerHTML = '<p class="hint">学習中…（数秒〜数十秒）</p>';
+      try {
+        const res = await fetch('/api/learn/run');
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || '失敗しました');
+        render(body);
+      } catch (e) { $('lm-result').innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+      $('lm-run').disabled = false;
+    }
+    function render(r) {
+      const imp = r.improvement;
+      const good = imp != null && imp > 0;
+      const feats = r.features.filter((f) => f.key !== 'market');
+      const beta = r.model.beta;
+      const maxAbs = Math.max(0.1, ...feats.map((f) => Math.abs(beta[f.key])));
+      const g = r.graded;
+      $('lm-result').innerHTML = `
+        <div class="grid-2" style="margin-top:12px">
+          <div class="kpi"><div class="label">オッズだけの予想と比べた精度（検証期間 ${r.testRaces}R）</div>
+            <div class="headline ${good ? 'pos' : 'neg'}">${imp == null ? '-' : (imp > 0 ? '+' : '') + (imp * 100).toFixed(2) + '%'}</div>
+            <div class="sub">対数損失の改善率。競馬ではプラス0.5%でも大きな差です${g ? `／重賞だけ(${g.races}R)では ${(g.improvement > 0 ? '+' : '') + (g.improvement * 100).toFixed(2)}%` : ''}</div></div>
+          <div class="kpi"><div class="label">推定1位の馬の勝率（検証期間）</div>
+            <div class="headline">${pct(r.topModel)}</div><div class="sub">1番人気は ${pct(r.topMarket)}</div></div>
+        </div>
+        <p class="verdict">${good
+          ? '<b class="pos">学習モデルはオッズだけの予想より当たっています。</b>予想に使う価値があります。'
+          : '<b class="neg">まだオッズだけの予想を上回れていません。</b>データ（期間）を増やして再学習してください。今は使わない方が安全です。'}</p>
+        <div class="btn-row" style="margin:10px 0 14px">
+          ${good ? '<button class="btn primary" data-act="use">このモデルを予想に使う</button>'
+            : '<button class="btn ghost" data-act="force" title="おすすめしません">それでも使う</button>'}
+        </div>
+        <div class="grid-2">
+          <div><h3 style="font-size:13px;margin:0 0 8px">何を重視しているか（学習した重み）</h3>
+            <div class="coef">${feats.map((f) => {
+              const v = beta[f.key], w = (Math.abs(v) / maxAbs) * 50;
+              return `<span title="${esc(f.desc)}">${esc(f.label)}</span>
+                <div class="cbar"><i class="zero"></i><span style="${v >= 0 ? `left:50%;width:${w}%;background:var(--pos)` : `right:50%;width:${w}%;background:var(--neg)`}"></span></div>
+                <span class="num ${v >= 0 ? 'pos' : 'neg'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}</span>`;
+            }).join('')}</div>
+            <p class="hint">緑＝高いほど勝ちやすい／赤＝高いほど勝ちにくい（オッズを考慮した上での上乗せ分）。オッズの重み ${beta.market.toFixed(2)}（1.0＝市場をそのまま信頼）。前走の着順・休養明けなどは数値が大きいほど不利な指標です。</p></div>
+          <div><h3 style="font-size:13px;margin:0 0 8px">期待値の帯ごとの単勝回収率（検証期間）</h3>
+            <table class="mini"><thead><tr><th>期待値</th><th class="num">点数</th><th class="num">的中</th><th class="num">回収率</th></tr></thead><tbody>
+            ${r.evBands.map((b) => `<tr><td>${b.from.toFixed(1)}〜${b.to > 9 ? '' : b.to.toFixed(1)}</td><td class="num">${b.bets}</td><td class="num">${b.hits}</td>
+              <td class="num ${b.roi == null ? '' : b.roi >= 1 ? 'pos' : 'neg'}"><b>${b.roi == null ? '-' : pct(b.roi)}</b></td></tr>`).join('')}
+            </tbody></table>
+            <p class="hint">期待値が高い帯ほど回収率が高ければ、モデルの期待値は信頼できます。的中が少ない帯は偶然の影響が大きい点に注意。</p></div>
+        </div>`;
+    }
+    return { init };
+  })();
+
   // ---------- 起動 ----------
   initPredict();
   Fetch.init();
   renderTrend();
   Backtest.init();
+  Learn.init();
   initLog();
   initSettings();
   renderLog();

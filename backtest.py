@@ -45,10 +45,11 @@ def in_scope(race, scope):
 def build_race(info, past, result, race_date):
     """1レース分の馬ごとの行（能力値・人気・オッズ・着順・複勝払戻）"""
     by_no = {r["no"]: r for r in result["rows"] if r["no"]}
-    ratings = {}
+    ratings, feats = {}, {}
     for no, h in past.items():
         runs = [r for r in h["runs"] if r["date"] < race_date]  # 念のため未来の情報を除外
         ratings[no] = A.rate_horse(runs, info.get("surface"), info.get("distance"))
+        feats[no] = A.horse_features(runs, info.get("surface"), info.get("distance"), race_date)
     horses = []
     for no, r in by_no.items():
         if r["odds"] is None or r["place"] is None:  # 取消・除外・中止は対象外
@@ -56,6 +57,7 @@ def build_race(info, past, result, race_date):
         horses.append({
             "no": no, "rating": ratings.get(no), "pop": r["pop"], "odds": r["odds"],
             "place": r["place"], "fukusho": result.get("fukusho", {}).get(no, 0),
+            "feat": feats.get(no) or A.horse_features([], info.get("surface"), info.get("distance"), race_date),
         })
     rated = [h for h in horses if h["rating"] is not None]
     if len(horses) < 5 or len(rated) < len(horses) * 0.6:  # 新馬戦など情報が少ないレースは除外

@@ -32,6 +32,13 @@
     return ex.map((v) => v / sum);
   }
 
+  function softmaxRaw(u) {
+    const m = Math.max(...u);
+    const ex = u.map((x) => Math.exp(x - m));
+    const s = ex.reduce((a, b) => a + b, 0);
+    return ex.map((v) => v / s);
+  }
+
   /** 対数線形ブレンド: p ∝ pModel^w × pMarket^(1-w) */
   function blend(pModel, pMarket, w) {
     const raw = pModel.map((pm, i) => {
@@ -118,8 +125,15 @@
     const valid = horses.filter((h) => h.odds > 1);
     const odds = valid.map((h) => h.odds);
     const pMarket = marketProbs(odds);
-    const pModel = scoreProbs(valid.map((h) => h.score), opt.temperature);
-    const p = blend(pModel, pMarket, opt.weight);
+    let pModel, p;
+    if (opt.learned && valid.every((h) => typeof h.ownU === 'number')) {
+      // 学習モデル: p ∝ exp(U_own + β_market × log p_market)
+      p = softmaxRaw(valid.map((h, i) => h.ownU + opt.learned.betaMarket * Math.log(Math.max(pMarket[i], 1e-9))));
+      pModel = p;
+    } else {
+      pModel = scoreProbs(valid.map((h) => h.score), opt.temperature);
+      p = blend(pModel, pMarket, opt.weight);
+    }
     const hv = harville(p);
     const rows = valid.map((h, i) => {
       const ev = p[i] * h.odds;
@@ -149,7 +163,7 @@
     return { rows, combos, overround: overround(odds), comboNames: types };
   }
 
-  const api = { marketProbs, overround, scoreProbs, blend, harville, kelly, roundBet, analyze };
+  const api = { marketProbs, overround, scoreProbs, softmaxRaw, blend, harville, kelly, roundBet, analyze };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KeibaModel = api;
 })(typeof window !== 'undefined' ? window : globalThis);

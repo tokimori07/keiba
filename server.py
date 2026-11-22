@@ -33,6 +33,7 @@ from datetime import date as _date
 
 import analysis as A
 import backtest as B
+import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -136,7 +137,7 @@ class NetkeibaProvider:
         info = self.race_info(race_id, date)
         html = self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800)
         past = A.parse_past5(html)
-        return {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
+        return with_model({**info, "horses": A.horses_report(past, info["surface"], info["distance"])}, past, date)
 
     # ---- バックテスト用（過去レースなので保存して再利用）----
     def past5(self, race_id):
@@ -171,6 +172,23 @@ class NetkeibaProvider:
                     "updated": payload["updated"], "horses": horses}
         return {**info, "kind": kind, "status": payload["status"], "updated": payload["updated"],
                 "odds": combos_from_payload(payload, kind, type_no)}
+
+
+def with_model(report, past, date):
+    """学習モデルが保存されていれば、各馬の「市場以外の強さ」を付ける（最新オッズとの合成は画面側）"""
+    model = L.load_model(ROOT)
+    if not model:
+        return report
+    d = date if "-" in date else f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    hs = report["horses"]
+    for h in hs:
+        runs = past.get(h["no"], {}).get("runs", [])
+        h["feat"] = A.horse_features(runs, report.get("surface"), report.get("distance"), d)
+    for h, u in zip(hs, L.own_strength(model, hs)):
+        h["ownU"] = round(u, 4)
+        h.pop("feat", None)
+    report["model"] = {"betaMarket": model["beta"]["market"], "trainedAt": model.get("trainedAt"), "races": model.get("races")}
+    return report
 
 
 def decode(raw):
@@ -328,7 +346,7 @@ class MockProvider:
                              "field": 16, "pop": place, "margin": round(0 if place == 1 else place * 0.12, 1), "last3f": 34.5,
                              "style": rng.choice(["逃げ", "先行", "差し", "追込"])})
             past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs}
-        return {**info, "horses": A.horses_report(past, "芝", 1600)}
+        return with_model({**info, "horses": A.horses_report(past, "芝", 1600)}, past, date or "2026-12-31")
 
     def past5(self, race_id):
         return {h["no"]: {"no": h["no"], "waku": h["waku"], "name": h["name"], "style": "", "runs": h["runs"]}
@@ -419,6 +437,7 @@ class BacktestJob:
         self.lock = threading.Lock()
         self.state = {"status": "idle"}
         self.races = []
+        self.learned = None
         self._cancel = False
 
     def start(self, d_from, d_to, scope, temperature):
@@ -444,6 +463,22 @@ class BacktestJob:
 
     def cancel(self):
         self._cancel = True
+
+    def learn(self):
+        if not self.races:
+            raise ValueError("先に検証タブでバックテストを実行してください（学習データになります）")
+        if not all("feat" in h for r in self.races for h in r["horses"]):
+            raise ValueError("古い形式のデータです。もう一度バックテストを実行してください")
+        self.learned = L.evaluate(self.races)
+        graded = [r for r in self.races if r.get("grade") in ("G1", "G2", "G3")]
+        test_from = self.learned["testFrom"]
+        g_test = [r for r in graded if r["date"] >= test_from]
+        if len(g_test) >= 5:
+            fit_test = L.fit([r for r in self.races if r["date"] < test_from], self.learned["l2"])
+            mk = L.log_loss(g_test, lambda r: L.market_probs([h["odds"] for h in r["horses"]]))
+            md = L.log_loss(g_test, lambda r: L.predict(fit_test, r["horses"], [h["odds"] for h in r["horses"]]))
+            self.learned["graded"] = {"races": len(g_test), "improvement": (mk - md) / mk}
+        return self.learned
 
     def reevaluate(self, temperature):
         if not self.races:
@@ -499,6 +534,24 @@ def make_handler(provider):
                 if url.path == "/api/backtest/cancel":
                     job.cancel()
                     return self._json(200, job.state)
+                if url.path == "/api/learn/run":
+                    return self._json(200, job.learn())
+                if url.path == "/api/learn/use":
+                    if not job.learned:
+                        return self._json(400, {"error": "先に学習してください"})
+                    if (job.learned.get("improvement") or 0) <= 0 and q.get("force") != "1":
+                        return self._json(400, {"error": "検証期間でオッズより精度が低いため、使用をおすすめしません"})
+                    L.save_model(ROOT, job.learned["model"])
+                    return self._json(200, {"ok": True, "model": job.learned["model"]})
+                if url.path == "/api/learn/off":
+                    try:
+                        os.remove(L.model_path(ROOT))
+                    except OSError:
+                        pass
+                    return self._json(200, {"ok": True})
+                if url.path == "/api/learn/status":
+                    m = L.load_model(ROOT)
+                    return self._json(200, {"model": m, "learned": job.learned})
                 if url.path == "/api/backtest/reevaluate":
                     return self._json(200, job.reevaluate(float(q.get("temp", 10))))
                 if url.path in ("/api/horses", "/api/trend"):

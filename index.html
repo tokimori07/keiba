@@ -4,11 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>競馬ノート</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
   <header class="app-header">
-    <h1>競馬ノート</h1>
+    <h1><span class="logo">◆</span>競馬ノート</h1>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="predict">予想</button>
       <button class="tab" data-tab="log">馬券記録</button>
@@ -21,110 +23,123 @@
   <main>
     <!-- ================= 予想 ================= -->
     <section id="tab-predict" class="panel active">
-      <div class="card" id="f-card">
-        <div class="card-head">
-          <h2>オッズ自動取得</h2>
-          <span id="f-status" class="badge"></span>
-        </div>
-        <div class="fetch-row">
-          <label>開催日<input type="date" id="f-date" /></label>
-          <button id="f-list" class="btn">レース一覧</button>
-          <label class="grow">レース<select id="f-race"><option value="">（先にレース一覧を取得）</option></select></label>
-          <button id="f-fetch" class="btn primary">オッズ取得</button>
-          <label class="check"><input type="checkbox" id="f-auto" /> 1分ごとに自動更新</label>
-        </div>
-        <p class="hint" id="f-hint">出走馬・単勝オッズを取り込みます。入力済みの印・スコアは馬番で引き継ぎます。組み合わせ馬券のオッズは券種タブを選ぶと取得します。</p>
+      <!-- レース選択 -->
+      <div class="picker">
+        <label>開催日<input type="date" id="f-date" /></label>
+        <label class="grow">重賞<select id="f-race"><option value="">読み込み中…</option></select></label>
+        <button id="f-fetch" class="btn primary">取得</button>
+        <label class="check"><input type="checkbox" id="f-auto" /> オッズ自動更新(1分)</label>
+        <span id="f-status" class="badge"></span>
+        <button id="f-list" class="hidden"></button>
       </div>
+      <p class="hint" id="f-hint"></p>
 
-      <div class="card" id="t-card">
-        <div class="card-head">
-          <h2>レース傾向 <span class="sub" id="t-mode"></span></h2>
-          <button id="t-load" class="btn">傾向を分析</button>
-        </div>
-        <div id="t-body"><p class="hint">オッズ取得したレースの過去10年の結果から、荒れやすさ・枠順・脚質の傾向を表示します（初回は集計に1分ほどかかります）。</p></div>
-      </div>
-
-      <div class="card">
-        <h2>レース情報</h2>
-        <div class="grid-4">
-          <label>日付<input type="date" id="p-date" /></label>
-          <label>競馬場<select id="p-venue"></select></label>
-          <label>R<input type="number" id="p-race" min="1" max="12" value="11" /></label>
-          <label>レース名<input type="text" id="p-name" placeholder="例: ジャパンC" /></label>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h2>出走馬と評価</h2>
-          <div class="btn-row">
-            <button id="p-ability" class="btn">能力値をスコアに反映</button>
-            <button id="p-add" class="btn">＋ 馬を追加</button>
-            <button id="p-paste" class="btn">一括入力</button>
-            <button id="p-clear" class="btn ghost">クリア</button>
+      <!-- レースのバナー -->
+      <div class="race-banner" id="r-banner">
+        <div class="rb-main">
+          <span class="grade" id="r-grade"></span>
+          <div>
+            <div class="rb-sub" id="r-sub">重賞を選んで「取得」を押すと、出走馬・オッズ・能力・過去10年の傾向をまとめて表示します</div>
+            <h2 class="rb-name" id="r-name">レースを選んでください</h2>
           </div>
         </div>
-        <p class="hint">単勝オッズと、あなたの評価（印 or スコア0〜100）を入力。印を押すとスコアが入ります。
-          能力★は近5走の着差とクラスから算出した、このレース内での相対評価です（★5＝メンバー上位）。</p>
-        <div class="table-wrap">
-          <table class="horses">
-            <thead><tr><th>馬番</th><th>枠</th><th>馬名</th><th>能力</th><th>近走</th><th>脚質</th><th>単勝オッズ</th><th>印</th><th>スコア</th><th></th></tr></thead>
-            <tbody id="p-horses"></tbody>
-          </table>
-        </div>
-        <div id="p-paste-box" class="paste-box hidden">
-          <p class="hint">1行1頭「馬番, 馬名, オッズ, スコア(省略可)」。タブ区切り・空白区切りも可。</p>
-          <textarea id="p-paste-text" rows="6" placeholder="1, ドウデュース, 3.2, 80&#10;2, リバティアイランド, 2.8&#10;3, スターズオンアース, 8.5, 65"></textarea>
-          <button id="p-paste-apply" class="btn primary">取り込む</button>
-        </div>
+        <div class="rb-chips" id="r-chips"></div>
       </div>
 
-      <div class="card">
-        <h2>モデル設定</h2>
-        <div class="grid-3">
-          <label>自分の予想の重み <output id="o-weight">50%</output>
-            <input type="range" id="p-weight" min="0" max="100" value="50" />
-            <span class="hint">0%=市場(オッズ)を完全に信頼 / 100%=自分の評価のみ</span>
-          </label>
-          <label>評価のメリハリ <output id="o-temp">10</output>
-            <input type="range" id="p-temp" min="3" max="30" value="10" />
-            <span class="hint">小さいほどスコア差が確率差に強く効く</span>
-          </label>
-          <label>買い目の基準EV <output id="o-minev">1.10</output>
-            <input type="range" id="p-minev" min="100" max="150" value="110" />
-            <span class="hint">これ以上の期待値の馬券だけ「買い」表示</span>
-          </label>
-        </div>
-      </div>
+      <div class="predict-layout">
+        <div class="predict-main">
+          <!-- 出馬表 -->
+          <div class="card">
+            <div class="card-head">
+              <h2>出馬表 <span class="sub" id="p-overround"></span></h2>
+              <div class="btn-row">
+                <div class="seg" id="p-sort"><button data-s="no">馬番順</button><button data-s="ev">妙味順</button><button data-s="p">勝率順</button></div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="racecard">
+                <thead><tr>
+                  <th>枠番</th><th>馬名・近走</th><th>能力</th><th class="num">単勝</th>
+                  <th>推定勝率 <span class="legend"><i class="lg-mkt"></i>オッズ <i class="lg-me"></i>予想</span></th>
+                  <th class="num">期待値</th><th>印</th><th></th>
+                </tr></thead>
+                <tbody id="p-horses"></tbody>
+              </table>
+            </div>
+            <details class="manual" id="p-manual">
+              <summary>手入力・編集（オッズや馬の追加、一括貼り付け）</summary>
+              <div class="grid-4">
+                <label>日付<input type="date" id="p-date" /></label>
+                <label>競馬場<select id="p-venue"></select></label>
+                <label>R<input type="number" id="p-race" min="1" max="12" value="11" /></label>
+                <label>レース名<input type="text" id="p-name" placeholder="例: ジャパンC" /></label>
+              </div>
+              <div class="btn-row" style="margin-top:8px">
+                <button id="p-add" class="btn">＋ 馬を追加</button>
+                <button id="p-paste" class="btn">一括入力</button>
+                <button id="p-clear" class="btn ghost">クリア</button>
+                <label class="check"><input type="checkbox" id="p-edit" /> 表の中で馬名・オッズ・スコアを編集</label>
+              </div>
+              <div id="p-paste-box" class="paste-box hidden">
+                <p class="hint">1行1頭「馬番, 馬名, オッズ, スコア(省略可)」。タブ区切り・空白区切りも可。</p>
+                <textarea id="p-paste-text" rows="6" placeholder="1, ホースA, 3.2, 80&#10;2, ホースB, 2.8&#10;3, ホースC, 8.5, 65"></textarea>
+                <button id="p-paste-apply" class="btn primary">取り込む</button>
+              </div>
+            </details>
+          </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>分析結果（単勝・複勝）</h2>
-          <span id="p-overround" class="badge"></span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>馬番</th><th>馬名</th><th>オッズ</th><th>市場確率</th><th>自分確率</th>
-              <th>推定勝率</th><th>単勝EV</th><th>推定複勝率</th><th>推奨額(ケリー)</th><th></th>
-            </tr></thead>
-            <tbody id="p-result"></tbody>
-          </table>
-        </div>
-      </div>
+          <!-- 組み合わせ -->
+          <div class="card">
+            <div class="card-head">
+              <h2>組み合わせ馬券</h2>
+              <div class="btn-row"><div class="seg" id="p-combo-type"></div><div class="seg" id="p-combo-sort"><button data-s="p" class="on">的中率順</button><button data-s="ev">期待値順</button></div></div>
+            </div>
+            <p class="hint">「必要オッズ」以上なら期待値が基準を超えます。実オッズは自動取得（手入力も可）。</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>買い目</th><th class="num">推定的中率</th><th class="num">理論オッズ</th><th class="num">必要オッズ</th><th>実オッズ</th><th class="num">期待値</th><th></th></tr></thead>
+                <tbody id="p-combos"></tbody>
+              </table>
+            </div>
+          </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h2>組み合わせ馬券（推定的中率 上位）</h2>
-          <div class="btn-row"><div class="seg" id="p-combo-sort"><button data-s="p" class="on">的中率順</button><button data-s="ev">EV順</button></div><div class="seg" id="p-combo-type"></div></div>
+          <!-- 傾向の詳細 -->
+          <div class="card" id="t-card">
+            <div class="card-head">
+              <h2>過去10年の傾向 <span class="sub" id="t-mode"></span></h2>
+              <button id="t-load" class="btn">傾向を分析</button>
+            </div>
+            <div id="t-body"><p class="hint">取得したレースの過去10年の結果から、荒れやすさ・枠順・脚質・人気の傾向を表示します（初回は集計に1分ほど）。</p></div>
+          </div>
         </div>
-        <p class="hint">「必要オッズ」以上なら期待値が基準を超えます。実オッズを入れるとEVを計算します。</p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>買い目</th><th>推定的中率</th><th>理論オッズ</th><th>必要オッズ</th><th>実オッズ</th><th>EV</th><th></th></tr></thead>
-            <tbody id="p-combos"></tbody>
-          </table>
-        </div>
+
+        <!-- サイド：予想のまとめ -->
+        <aside class="predict-side">
+          <div class="card summary" id="s-summary"><h2>予想のまとめ</h2><p class="hint">出走馬を取得すると、本命・妙味馬・おすすめの買い目が出ます。</p></div>
+
+          <div class="card">
+            <h2>予想のしかた</h2>
+            <div class="seg wide" id="p-method">
+              <button data-m="learned">学習モデル</button><button data-m="manual">自分の印</button>
+            </div>
+            <p class="hint" id="p-method-hint"></p>
+            <div id="p-manual-opts">
+              <button id="p-ability" class="btn small" style="margin-bottom:8px">能力値から印のスコアを自動セット</button>
+              <label>自分の予想の重み <output id="o-weight">50%</output>
+                <input type="range" id="p-weight" min="0" max="100" value="50" />
+                <span class="hint">0%＝オッズを全面的に信頼／100%＝自分の評価のみ</span>
+              </label>
+              <label>評価のメリハリ <output id="o-temp">10</output>
+                <input type="range" id="p-temp" min="3" max="30" value="10" />
+                <span class="hint">小さいほどスコア差が勝率差に強く効く</span>
+              </label>
+            </div>
+            <label>買いの基準（期待値） <output id="o-minev">1.10</output>
+              <input type="range" id="p-minev" min="100" max="150" value="110" />
+              <span class="hint">この値以上の馬券を「妙味あり」として表示</span>
+            </label>
+          </div>
+        </aside>
       </div>
     </section>
 
@@ -223,6 +238,20 @@
         <div id="bt-progress" class="hidden"><div class="bar big"><span id="bt-bar"></span></div><p class="hint" id="bt-msg"></p></div>
       </div>
       <div id="bt-result"></div>
+
+      <div class="card" id="lm-card">
+        <div class="card-head">
+          <h2>学習モデル（精度アップ）</h2>
+          <span class="badge" id="lm-status"></span>
+        </div>
+        <p class="hint">上のバックテストで集めたレースから、能力値・前走・休養・同条件実績などの<b>重み付けを自動で学習</b>します（オッズも材料に入るので「どこまで市場を信じるか」も学習）。
+          前半70%で学習し、残り30%で<b>オッズだけで予想した場合より当たるか</b>を確認します。重賞は数が少ないので、学習には「重賞・特別戦」のデータを推奨します。</p>
+        <div class="btn-row">
+          <button id="lm-run" class="btn primary">学習して検証する</button>
+          <button id="lm-off" class="btn ghost">学習モデルの使用をやめる</button>
+        </div>
+        <div id="lm-result"></div>
+      </div>
     </section>
 
     <!-- ================= 設定 ================= -->

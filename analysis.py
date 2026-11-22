@@ -5,6 +5,7 @@
   - レース傾向: 過去10年の同レース（または同時期・同条件）の結果から
                荒れやすさ・枠順（内外）・脚質・人気の傾向を集計
 """
+import math
 import re
 import statistics
 from datetime import date, timedelta
@@ -398,3 +399,33 @@ def aggregate_trend(results):
 
 def parse_date(s):
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+
+# ---------------------------------------------------------------------------
+# 学習モデル用の特徴量（その馬の近5走から、レース前に分かる情報だけ）
+# ---------------------------------------------------------------------------
+def horse_features(runs, surface, distance, race_date):
+    """数値の特徴量（欠損は None）。レース内での標準化は learn.py で行う"""
+    runs = [r for r in runs if r["date"] < race_date]
+    valid = [r for r in runs if r["place"] is not None and r["surface"] != "障"]
+    scores = [run_score(r) for r in valid]
+    last = valid[0] if valid else None
+    days = None
+    if runs:
+        try:
+            d0 = date.fromisoformat(race_date)
+            d1 = date.fromisoformat(runs[0]["date"])
+            days = (d0 - d1).days
+        except ValueError:
+            days = None
+    same = [r for r in valid if r["surface"] == surface and r["distance"] and distance
+            and abs(r["distance"] - distance) <= 200]
+    return {
+        "rating": rate_horse(runs, surface, distance),
+        "last": scores[0] if scores else None,
+        "best": max(scores) if scores else None,
+        "lastPlace": (last["place"] / last["field"]) if last and last.get("field") else None,
+        "logDays": math.log(max(days, 7)) if days is not None else None,
+        "runs": len(runs),
+        "sameTop3": (sum(1 for r in same if r["place"] <= 3) + 0.5) / (len(same) + 2),  # 件数が少ないときは平均へ寄せる
+    }
