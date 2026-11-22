@@ -301,3 +301,4 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
   .odds { font-size: 16px; }
   .picker .grow { flex-basis: 100%; }
 }
+.app-header .ver { font-size: 10px; font-weight: 400; opacity: .6; letter-spacing: 0; }

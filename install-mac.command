@@ -20,6 +20,13 @@ mkdir -p "$DEST"
 cp -R "$SRC/index.html" "$SRC/server.py" "$SRC/analysis.py" "$SRC/backtest.py" "$SRC/learn.py" "$SRC/css" "$SRC/js" "$DEST/"
 
 echo "2/3 自動起動を設定中…"
+# 以前ターミナルなどで起動したままの古いサーバーがあれば止める（古い画面が出続けるのを防ぐ）
+OLD_PIDS="$(lsof -ti tcp:8765 -sTCP:LISTEN 2>/dev/null || true)"
+if [ -n "$OLD_PIDS" ]; then
+  echo "  起動中の古いサーバーを停止します（PID: $OLD_PIDS）"
+  kill $OLD_PIDS 2>/dev/null || true
+  sleep 1
+fi
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 cat > "$PLIST" <<PLIST_EOF
@@ -49,7 +56,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   if curl -s -m 1 http://localhost:8765/api/ping >/dev/null 2>&1; then
     open "http://localhost:8765"
     echo ""
-    echo "完了しました。今後は http://localhost:8765 をブックマークして開くだけでOKです。"
+    echo "完了しました（バージョン: $(curl -s http://localhost:8765/api/ping | sed -n 's/.*"version": "\([^"]*\)".*/\1/p')）"
+    echo "今後は http://localhost:8765 をブックマークして開くだけでOKです。"
     echo "（Macを再起動しても自動で起動します。このウィンドウは閉じて構いません）"
     exit 0
   fi

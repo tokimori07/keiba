@@ -37,6 +37,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+APP_VERSION = "2026.11.22-b"
 
 VENUES = {
     "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
@@ -494,6 +495,12 @@ def make_handler(provider):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=ROOT, **kw)
 
+        def end_headers(self):
+            # 画面のファイル（HTML/CSS/JS）をブラウザに覚えさせない → 更新後すぐ新しい画面になる
+            if not self.path.startswith("/api/"):
+                self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
         def log_message(self, fmt, *args):
             if "/api/" in (args[0] if args else ""):
                 sys.stderr.write("%s\n" % (fmt % args))
@@ -514,7 +521,7 @@ def make_handler(provider):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             try:
                 if url.path == "/api/ping":
-                    return self._json(200, {"ok": True, "provider": type(provider).__name__})
+                    return self._json(200, {"ok": True, "provider": type(provider).__name__, "version": APP_VERSION})
                 if url.path == "/api/races":
                     date = q.get("date", "")
                     if not re.fullmatch(r"\d{8}", date):
