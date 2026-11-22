@@ -139,3 +139,8 @@ tr.buy { background: var(--accent-soft); }
   opacity: 0; pointer-events: none; transition: opacity .2s; font-size: 13px;
 }
 .toast.show { opacity: 1; }
+.fetch-row { display: flex; gap: 8px 10px; align-items: flex-end; flex-wrap: wrap; }
+.fetch-row .grow { flex: 1 1 220px; }
+.fetch-row label.check { flex-direction: row; align-items: center; gap: 4px; padding-bottom: 6px; }
+.badge.ok { color: var(--pos); }
+.badge.err { color: var(--neg); }

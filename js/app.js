@@ -16,7 +16,8 @@
     settings: { bankroll: 100000, kelly: 0.25, cap: 10000 },
     draft: {
       date: today(), venue: '東京', race: 11, name: '',
-      weight: 50, temp: 10, minev: 110, comboType: 'quinella',
+      weight: 50, temp: 10, minev: 110, comboType: 'quinella', comboSort: 'p',
+      raceId: '', comboOdds: {},
       horses: [],
     },
   });
@@ -142,6 +143,11 @@
     $('p-combo-type').addEventListener('click', (e) => {
       if (!e.target.dataset.k) return;
       d().comboType = e.target.dataset.k; save(); renderAnalysis();
+      Fetch.combos(false);
+    });
+    $('p-combo-sort').addEventListener('click', (e) => {
+      if (!e.target.dataset.s) return;
+      d().comboSort = e.target.dataset.s; save(); renderAnalysis();
     });
     $('p-combos').addEventListener('input', (e) => {
       if (e.target.dataset.f !== 'odds') return;
@@ -187,6 +193,7 @@
     $('o-temp').textContent = d().temp;
     $('o-minev').textContent = (d().minev / 100).toFixed(2);
     document.querySelectorAll('#p-combo-type button').forEach((b) => b.classList.toggle('on', b.dataset.k === d().comboType));
+    document.querySelectorAll('#p-combo-sort button').forEach((b) => b.classList.toggle('on', b.dataset.s === (d().comboSort || 'p')));
 
     const horses = d().horses
       .map((h) => ({ no: h.no, name: h.name, odds: Number(h.odds), score: Number(h.score) || 0 }))
@@ -220,17 +227,33 @@
         </tr>`;
       }).join('');
 
-    const list = res.combos[d().comboType].slice(0, 20);
+    const type = d().comboType;
+    const ordered = type === 'exacta' || type === 'trifecta';
+    const rawOdds = (d().comboOdds || {})[type];
+    const real = rawOdds && rawOdds.__rid === d().raceId ? rawOdds : null;
+    let list = res.combos[type].map((c) => {
+      const nos = ordered ? c.nos : c.nos.slice().sort((a, b) => a - b);
+      const o = real ? real[nos.join('-')] : undefined;
+      return { ...c, nos, real: o, ev: o ? c.p * o : null };
+    });
+    if (d().comboSort === 'ev') {
+      list = list.filter((c) => c.ev !== null).sort((a, b) => b.ev - a.ev);
+    }
+    list = list.slice(0, 20);
+    if (!list.length) {
+      $('p-combos').innerHTML = '<tr><td colspan="7" class="empty">EV順は実オッズの取得後に使えます</td></tr>';
+      return;
+    }
     $('p-combos').innerHTML = list.map((c) => {
-      const sep = d().comboType === 'exacta' || d().comboType === 'trifecta' ? '→' : '-';
-      const sel = c.nos.join(sep);
-      return `<tr data-p="${c.p}" data-sel="${esc(sel)}">
+      const sel = c.nos.join(ordered ? '→' : '-');
+      const evCls = c.ev === null ? '' : c.ev >= minEv ? 'pos' : 'neg';
+      return `<tr data-p="${c.p}" data-sel="${esc(sel)}" class="${c.ev !== null && c.ev >= minEv ? 'buy' : ''}">
         <td><b>${esc(sel)}</b></td>
         <td class="num">${pct(c.p, 2)}</td>
         <td class="num">${c.fairOdds.toFixed(1)}</td>
         <td class="num">${(c.fairOdds * minEv).toFixed(1)}倍〜</td>
-        <td><input type="number" data-f="odds" step="0.1" min="1" style="width:80px" placeholder="実オッズ" /></td>
-        <td class="num ev">-</td>
+        <td><input type="number" data-f="odds" step="0.1" min="1" style="width:80px" placeholder="実オッズ" value="${c.real || ''}" /></td>
+        <td class="num ev ${evCls}">${c.ev !== null ? c.ev.toFixed(2) : '-'}</td>
         <td><button class="btn small" data-act="rec">記録へ</button></td>
       </tr>`;
     }).join('');
@@ -484,8 +507,94 @@
     return out;
   }
 
+
+  // =====================================================
+  // オッズ自動取得（server.py 経由）
+  // =====================================================
+  const Fetch = (() => {
+    let timer = null;
+    const status = (msg, cls = '') => { $('f-status').textContent = msg; $('f-status').className = 'badge ' + cls; };
+    const ymd = () => ($('f-date').value || today()).replace(/-/g, '');
+    async function api(path) {
+      const res = await fetch(path, { cache: 'no-store' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      return body;
+    }
+
+    function init() {
+      $('f-date').value = d().date || today();
+      if (location.protocol === 'file:') {
+        ['f-list', 'f-fetch', 'f-race', 'f-auto'].forEach((id) => { $(id).disabled = true; });
+        $('f-hint').innerHTML = '自動取得を使うには、ターミナルで <code>python3 server.py</code> を実行し <b>http://localhost:8765</b> を開いてください。';
+        return;
+      }
+      api('/api/ping').then((r) => status(r.provider === 'MockProvider' ? 'モックデータで接続中' : '接続OK', 'ok'))
+        .catch(() => status('サーバーに接続できません', 'err'));
+      $('f-list').addEventListener('click', listRaces);
+      $('f-fetch').addEventListener('click', () => win(true));
+      $('f-auto').addEventListener('change', (e) => {
+        clearInterval(timer);
+        if (e.target.checked) timer = setInterval(() => { win(false).then(() => combos(false)); }, 60000);
+      });
+      if (d().raceId) {
+        $('f-race').innerHTML = `<option value="${esc(d().raceId)}">${esc(d().venue)}${esc(d().race)}R ${esc(d().name)}</option>`;
+      }
+    }
+
+    async function listRaces() {
+      status('レース一覧を取得中…');
+      try {
+        const { races } = await api(`/api/races?date=${ymd()}`);
+        if (!races.length) { status('この日のJRA開催はありません', 'err'); return; }
+        $('f-race').innerHTML = races.map((r) =>
+          `<option value="${esc(r.race_id)}">${esc(r.venue)} ${r.race}R ${esc(r.name)}</option>`).join('');
+        if (races.some((r) => r.race_id === d().raceId)) $('f-race').value = d().raceId;
+        status(`${races.length}レース`, 'ok');
+      } catch (e) { status('一覧の取得失敗: ' + e.message, 'err'); }
+    }
+
+    async function win(manual) {
+      const rid = $('f-race').value;
+      if (!rid) { if (manual) toast('レースを選んでください'); return; }
+      status('オッズを取得中…');
+      try {
+        const r = await api(`/api/odds?race_id=${rid}&type=win`);
+        const prev = new Map(d().horses.map((h) => [Number(h.no), h]));
+        if (rid !== d().raceId) { d().comboOdds = {}; prev.clear(); }
+        d().horses = r.horses.filter((h) => h.odds).map((h) => ({
+          no: h.no,
+          name: h.name || (prev.get(h.no) || {}).name || '',
+          odds: h.odds,
+          score: (prev.get(h.no) || {}).score ?? 50,
+        }));
+        const scratched = r.horses.filter((h) => !h.odds).map((h) => h.no);
+        Object.assign(d(), { raceId: rid, venue: r.venue, race: r.race, name: r.name || d().name, date: $('f-date').value });
+        $('p-venue').value = r.venue; $('p-race').value = r.race; $('p-name').value = d().name; $('p-date').value = d().date;
+        save(); renderHorses();
+        status(`単勝 ${r.updated || ''} 時点${scratched.length ? ` / 取消・オッズなし: ${scratched.join(',')}番` : ''}`, 'ok');
+        if (manual) combos(true);
+      } catch (e) { status('取得失敗: ' + e.message, 'err'); }
+    }
+
+    async function combos(force) {
+      const rid = d().raceId;
+      if (!rid || location.protocol === 'file:') return;
+      const type = d().comboType;
+      if (!force && d().comboOdds[type] && d().comboOdds[type].__rid === rid && Date.now() - d().comboOdds[type].__at < 60000) return;
+      try {
+        const r = await api(`/api/odds?race_id=${rid}&type=${type}`);
+        d().comboOdds[type] = { ...r.odds, __rid: rid, __at: Date.now() };
+        save();
+        if (d().comboType === type) renderAnalysis();
+      } catch (e) { status(`${COMBO_TO_BET[type]}オッズの取得失敗: ${e.message}`, 'err'); }
+    }
+    return { init, combos };
+  })();
+
   // ---------- 起動 ----------
   initPredict();
+  Fetch.init();
   initLog();
   initSettings();
   renderLog();

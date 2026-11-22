@@ -20,6 +20,21 @@
   <main>
     <!-- ================= 予想 ================= -->
     <section id="tab-predict" class="panel active">
+      <div class="card" id="f-card">
+        <div class="card-head">
+          <h2>オッズ自動取得</h2>
+          <span id="f-status" class="badge"></span>
+        </div>
+        <div class="fetch-row">
+          <label>開催日<input type="date" id="f-date" /></label>
+          <button id="f-list" class="btn">レース一覧</button>
+          <label class="grow">レース<select id="f-race"><option value="">（先にレース一覧を取得）</option></select></label>
+          <button id="f-fetch" class="btn primary">オッズ取得</button>
+          <label class="check"><input type="checkbox" id="f-auto" /> 1分ごとに自動更新</label>
+        </div>
+        <p class="hint" id="f-hint">出走馬・単勝オッズを取り込みます。入力済みの印・スコアは馬番で引き継ぎます。組み合わせ馬券のオッズは券種タブを選ぶと取得します。</p>
+      </div>
+
       <div class="card">
         <h2>レース情報</h2>
         <div class="grid-4">
@@ -90,7 +105,7 @@
       <div class="card">
         <div class="card-head">
           <h2>組み合わせ馬券（推定的中率 上位）</h2>
-          <div class="seg" id="p-combo-type"></div>
+          <div class="btn-row"><div class="seg" id="p-combo-sort"><button data-s="p" class="on">的中率順</button><button data-s="ev">EV順</button></div><div class="seg" id="p-combo-type"></div></div>
         </div>
         <p class="hint">「必要オッズ」以上なら期待値が基準を超えます。実オッズを入れるとEVを計算します。</p>
         <div class="table-wrap">
