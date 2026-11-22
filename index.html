@@ -13,6 +13,7 @@
       <button class="tab active" data-tab="predict">予想</button>
       <button class="tab" data-tab="log">馬券記録</button>
       <button class="tab" data-tab="stats">成績分析</button>
+      <button class="tab" data-tab="backtest">検証</button>
       <button class="tab" data-tab="settings">設定</button>
     </nav>
   </header>
@@ -198,6 +199,29 @@
           <p class="hint">EVが高い帯ほど実際の回収率も高ければ、予想モデルが機能しています。</p></div>
         <div class="card span-2"><h2>月別</h2><div id="s-month"></div></div>
       </div>
+    </section>
+
+    <!-- ================= 検証（バックテスト） ================= -->
+    <section id="tab-backtest" class="panel">
+      <div class="card">
+        <h2>バックテスト</h2>
+        <p class="hint">過去のレースで「その時点の近5走」から能力値を計算し、実際の結果・最終オッズと突き合わせて、能力★と予想モデルが本当に役立つかを検証します。</p>
+        <div class="fetch-row">
+          <label>開始日<input type="date" id="bt-from" /></label>
+          <label>終了日<input type="date" id="bt-to" /></label>
+          <label>対象<select id="bt-scope">
+            <option value="graded">重賞のみ（速い）</option>
+            <option value="named" selected>重賞・特別戦</option>
+            <option value="all">全レース（時間がかかる）</option>
+          </select></label>
+          <label>評価のメリハリ<input type="number" id="bt-temp" min="3" max="30" value="10" style="width:70px" /></label>
+          <button id="bt-run" class="btn primary">実行</button>
+          <button id="bt-cancel" class="btn ghost hidden">中止</button>
+        </div>
+        <p class="hint" id="bt-estimate"></p>
+        <div id="bt-progress" class="hidden"><div class="bar big"><span id="bt-bar"></span></div><p class="hint" id="bt-msg"></p></div>
+      </div>
+      <div id="bt-result"></div>
     </section>
 
     <!-- ================= 設定 ================= -->

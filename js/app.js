@@ -714,10 +714,157 @@
     return { init, combos, horses, trend };
   })();
 
+  // =====================================================
+  // 検証（バックテスト）
+  // =====================================================
+  const Backtest = (() => {
+    let timer = null;
+    const RATE_PER_DAY = { graded: 1.5, named: 6, all: 24 };  // 1日あたりの対象レース数の目安
+    const roiCls = (r) => (r == null ? '' : r >= 1 ? 'pos' : r < 0.8 ? 'neg' : '');
+    const pctOr = (x, d = 1) => (x == null ? '-' : pct(x, d));
+
+    function init() {
+      const to = new Date(); to.setDate(to.getDate() - 1);
+      const from = new Date(to); from.setDate(from.getDate() - 56);
+      const iso = (x) => new Date(x.getTime() - x.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      $('bt-from').value = iso(from); $('bt-to').value = iso(to);
+      ['bt-from', 'bt-to', 'bt-scope'].forEach((id) => $(id).addEventListener('change', estimate));
+      estimate();
+      if (location.protocol === 'file:') {
+        $('bt-run').disabled = true;
+        $('bt-estimate').textContent = 'バックテストは server.py で起動したとき（http://localhost:8765）に使えます。';
+      } else {
+        $('bt-run').addEventListener('click', start);
+        $('bt-cancel').addEventListener('click', () => fetch('/api/backtest/cancel'));
+        fetch('/api/backtest/status').then((r) => r.json()).then((st) => { if (st.status === 'running') poll(); }).catch(() => {});
+      }
+      $('bt-result').addEventListener('click', (e) => {
+        if (e.target.dataset.act !== 'apply') return;
+        d().weight = Number(e.target.dataset.w); d().minev = Number(e.target.dataset.e);
+        save();
+        $('p-weight').value = d().weight; $('p-minev').value = d().minev; renderAnalysis();
+        toast(`予想タブに反映しました（自分の重み ${d().weight}% / 基準EV ${(d().minev / 100).toFixed(2)}）`);
+      });
+      if (state.backtest) render(state.backtest);
+    }
+
+    function estimate() {
+      const days = Math.max(0, (new Date($('bt-to').value) - new Date($('bt-from').value)) / 86400000 + 1);
+      const raceDays = Math.round(days * 3 / 7);
+      const races = Math.round(raceDays * RATE_PER_DAY[$('bt-scope').value]);
+      const min = Math.ceil((raceDays * 1.5 + races * 3.2) / 60);
+      $('bt-estimate').textContent = `目安: 約${races}レース・初回は約${min}分（取得済みのレースは保存されるので、2回目以降は数秒）。100レース以上あると結果が安定します。`;
+    }
+
+    async function start() {
+      const q = new URLSearchParams({
+        from: $('bt-from').value.replace(/-/g, ''), to: $('bt-to').value.replace(/-/g, ''),
+        scope: $('bt-scope').value, temp: $('bt-temp').value || 10,
+      });
+      const res = await fetch('/api/backtest/start?' + q);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { toast(body.error || '開始できませんでした'); return; }
+      poll();
+    }
+
+    function poll() {
+      $('bt-progress').classList.remove('hidden'); $('bt-cancel').classList.remove('hidden'); $('bt-run').disabled = true;
+      clearInterval(timer);
+      timer = setInterval(async () => {
+        let st;
+        try { st = await (await fetch('/api/backtest/status')).json(); } catch (e) { return; }
+        $('bt-bar').style.width = st.total ? `${(st.done / st.total) * 100}%` : '3%';
+        $('bt-msg').textContent = `${st.total ? `${st.done}/${st.total}レース　` : ''}${st.message || ''}`;
+        if (st.status === 'running') return;
+        clearInterval(timer);
+        $('bt-progress').classList.add('hidden'); $('bt-cancel').classList.add('hidden'); $('bt-run').disabled = false;
+        if (st.status === 'error') { toast('バックテスト失敗: ' + st.message); return; }
+        if (st.result) { state.backtest = st.result; save(); render(st.result); }
+        else toast('対象レースがありませんでした');
+      }, 1500);
+    }
+
+    function statTable(rows) {
+      return `<div class="table-wrap"><table class="mini"><thead><tr><th></th><th class="num">頭数</th><th class="num">勝率</th><th class="num">複勝率</th><th class="num">単勝回収率</th><th class="num">複勝回収率</th></tr></thead><tbody>
+        ${rows.map(([label, v]) => `<tr><td>${label}</td><td class="num">${v.n}</td><td class="num">${pctOr(v.winRate)}</td><td class="num">${pctOr(v.top3Rate)}</td>
+          <td class="num ${roiCls(v.tanRoi)}"><b>${pctOr(v.tanRoi)}</b></td><td class="num ${roiCls(v.fukuRoi)}"><b>${pctOr(v.fukuRoi)}</b></td></tr>`).join('')}
+      </tbody></table></div>`;
+    }
+
+    function verdicts(r) {
+      const out = [];
+      const s5 = r.byStars['5'], s1 = r.byStars['1'] || r.byStars['2'];
+      if (s5.n && s1 && s1.n) {
+        const ok = s5.winRate > (r.byStars['3'].winRate || 0) && (r.byStars['3'].winRate || 0) >= (s1.winRate || 0);
+        out.push(ok ? `★が高いほど勝率が高い（★5 ${pct(s5.winRate)} → ★3 ${pctOr(r.byStars['3'].winRate)}）。<b class="pos">能力値は「強さ」を捉えています</b>`
+          : `★と勝率の関係がはっきりしません。<b class="neg">能力値の計算式の見直しが必要</b>です`);
+      }
+      const t = r.topRated, f = r.favorite;
+      out.push(`能力1位の馬の勝率 ${pct(t.winRate)}（1番人気は ${pct(f.winRate)}）。` + (t.winRate >= f.winRate
+        ? '<b class="pos">市場と同等以上に当てています</b>' : '当てる力そのものは市場（1番人気）の方が上。<b>オッズとの組み合わせが鍵</b>'));
+      const u = r.underrated;
+      if (u.n >= 30) out.push(`人気より能力順位が3つ以上高い「過小評価馬」の単勝回収率は <b class="${roiCls(u.tanRoi)}">${pct(u.tanRoi)}</b>（${u.n}頭）。` +
+        (u.tanRoi >= 0.9 ? '市場が見落としている情報を含んでいる可能性があります' : '能力値の情報は、ほぼオッズに織り込み済みです'));
+      const sp = r.split;
+      if (sp.best && sp.bestTest) {
+        const ok = sp.bestTest.roi != null && sp.bestTest.roi >= 1;
+        out.push(`前半（${sp.trainRaces}R）で最も良かった設定「自分の重み${sp.best.weight * 100}%・基準EV ${sp.best.minEv.toFixed(2)}」を後半（${sp.testRaces}R）に当てはめると、
+          単勝回収率 <b class="${roiCls(sp.bestTest.roi)}">${pctOr(sp.bestTest.roi)}</b>（${sp.bestTest.bets}点・${sp.bestTest.hits}的中）。同期間に1番人気を買い続けると ${pctOr(sp.favoriteTest.tanRoi)}。` +
+          (sp.bestTest.bets < 100 ? ' <b>まだ点数が少なく偶然の影響が大きい</b>ので、期間を広げて再確認してください' : ok ? ' <b class="pos">期間外でもプラス。有望です</b>' : ''));
+      }
+      return out;
+    }
+
+    function heatmap(r) {
+      const W = [0, 0.25, 0.5, 0.75, 1], E = [1.0, 1.1, 1.2, 1.3, 1.5];
+      const best = r.split.best;
+      const cell = (w, e) => r.grid.find((g) => g.weight === w && Math.abs(g.minEv - e) < 1e-9);
+      const color = (roi) => {
+        if (roi == null) return 'transparent';
+        const x = Math.max(-1, Math.min(1, (roi - 0.8) / 0.4));  // 80%を中立に
+        return x >= 0 ? `rgba(31,122,63,${0.12 + x * 0.45})` : `rgba(192,57,43,${0.12 - x * 0.4})`;
+      };
+      return `<div class="table-wrap"><table class="heat mini"><thead><tr><th>自分の重み ＼ 基準EV</th>${E.map((e) => `<th class="num">${e.toFixed(2)}</th>`).join('')}</tr></thead><tbody>
+        ${W.map((w) => `<tr><th>${w * 100}%${w === 0 ? '（オッズのみ）' : ''}</th>${E.map((e) => {
+          const g = cell(w, e);
+          const isBest = best && best.weight === w && Math.abs(best.minEv - e) < 1e-9;
+          return `<td class="cell ${isBest ? 'best' : ''}" style="background:${color(g.roi)}">${pctOr(g.roi, 0)}<small>${g.bets}点</small></td>`;
+        }).join('')}</tr>`).join('')}
+      </tbody></table></div>`;
+    }
+
+    function render(r) {
+      if (!r) { $('bt-result').innerHTML = ''; return; }
+      const sp = r.split;
+      const calib = r.calibration.filter((c) => c.n);
+      $('bt-result').innerHTML = `
+        <div class="card"><div class="card-head"><h2>総合判定</h2><span class="badge">${esc(r.from)}〜${esc(r.to)}　${r.races}レース・${r.horses}頭</span></div>
+          <ul class="insights">${verdicts(r).map((v) => `<li>${v}</li>`).join('')}</ul>
+          ${sp.best ? `<button class="btn primary" data-act="apply" data-w="${sp.best.weight * 100}" data-e="${Math.round(sp.best.minEv * 100)}">この設定（重み${sp.best.weight * 100}%・基準EV ${sp.best.minEv.toFixed(2)}）を予想タブに反映</button>` : ''}
+        </div>
+        <div class="grid-2">
+          <div class="card"><h2>能力★別の成績</h2>${statTable([5, 4, 3, 2, 1].map((s) => ['★'.repeat(s), r.byStars[s]]))}
+            <p class="hint">★が高いほど勝率・複勝率が高ければ、能力値は機能しています。回収率は80%前後が「市場平均」です。</p></div>
+          <div class="card"><h2>市場（人気）との比較</h2>${statTable([['能力1位の馬', r.topRated], ['1番人気の馬', r.favorite], ['過小評価馬', r.underrated], ['人気先行馬', r.overrated]])}
+            <p class="hint">過小評価馬＝能力順位が人気順位より3つ以上高い馬。ここの回収率が高いほど「オッズに勝てる情報」です。</p></div>
+        </div>
+        <div class="card"><h2>予想モデルの設定別 単勝回収率（全期間）</h2>
+          <p class="hint">予想タブと同じ計算で「EVが基準以上の馬の単勝を100円ずつ」買った場合。枠線＝前半期間で最も良かった設定（後半の成績は総合判定を参照）。点数が少ないマスは偶然の影響が大きい点に注意。</p>
+          ${heatmap(r)}</div>
+        <div class="card"><h2>推定勝率の当てはまり（能力値のみ）</h2>
+          <div class="table-wrap"><table class="mini"><thead><tr><th>推定勝率の帯</th><th class="num">頭数</th><th class="num">推定の平均</th><th class="num">実際の勝率</th></tr></thead><tbody>
+          ${calib.map((c) => `<tr><td>${pct(c.from, 0)}〜${c.to > 1 ? '' : pct(c.to, 0)}</td><td class="num">${c.n}</td><td class="num">${pctOr(c.pred)}</td><td class="num"><b>${pctOr(c.actual)}</b></td></tr>`).join('')}
+          </tbody></table></div>
+          <p class="hint">推定と実際が近いほど確率として信頼できます。実際の方が極端に低い/高い場合は「評価のメリハリ」を調整してください。</p></div>`;
+    }
+    return { init };
+  })();
+
   // ---------- 起動 ----------
   initPredict();
   Fetch.init();
   renderTrend();
+  Backtest.init();
   initLog();
   initSettings();
   renderLog();

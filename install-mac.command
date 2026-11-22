@@ -17,7 +17,7 @@ fi
 
 echo "1/3 アプリを $DEST にコピー中…"
 mkdir -p "$DEST"
-cp -R "$SRC/index.html" "$SRC/server.py" "$SRC/analysis.py" "$SRC/css" "$SRC/js" "$DEST/"
+cp -R "$SRC/index.html" "$SRC/server.py" "$SRC/analysis.py" "$SRC/backtest.py" "$SRC/css" "$SRC/js" "$DEST/"
 
 echo "2/3 自動起動を設定中…"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"

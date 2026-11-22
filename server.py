@@ -18,6 +18,7 @@ API:
 """
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -31,6 +32,7 @@ import hashlib
 from datetime import date as _date
 
 import analysis as A
+import backtest as B
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -135,6 +137,13 @@ class NetkeibaProvider:
         html = self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800)
         past = A.parse_past5(html)
         return {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
+
+    # ---- バックテスト用（過去レースなので保存して再利用）----
+    def past5(self, race_id):
+        return A.parse_past5(self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=86400, persist=True))
+
+    def result(self, race_id):
+        return A.parse_result(self._get(f"{self.BASE}/race/result.html?race_id={race_id}", ttl=86400, persist=True))
 
     # ---- レース傾向（過去10年）----
     def trend(self, race_id, date):
@@ -283,8 +292,9 @@ class MockProvider:
         out = []
         for vc in ("05", "08"):
             for r in range(1, 13):
-                rid = f"{date[:4]}{vc}0501{r:02d}"
-                out.append({**parse_race_id(rid), "name": "モック特別" if r == 11 else f"{r}R 一般"})
+                rid = f"{date[:4]}{vc}{date[4:6]}{date[6:8]}{r:02d}"
+                out.append({**parse_race_id(rid), "name": "モック特別" if r == 11 else f"{r}R 一般",
+                            "course": "芝1600m", "surface": "芝", "distance": 1600, "grade": "G3" if r == 11 else ""})
         return out
 
     def _probs(self, race_id):
@@ -319,6 +329,23 @@ class MockProvider:
                              "style": rng.choice(["逃げ", "先行", "差し", "追込"])})
             past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs}
         return {**info, "horses": A.horses_report(past, "芝", 1600)}
+
+    def past5(self, race_id):
+        return {h["no"]: {"no": h["no"], "waku": h["waku"], "name": h["name"], "style": "", "runs": h["runs"]}
+                for h in self.horses(race_id, "")["horses"]}
+
+    def result(self, race_id):
+        p = self._probs(race_id)
+        h = self.horses(race_id, "")["horses"]
+        rng = random.Random(race_id + "result")
+        # 能力値が高いほど少し勝ちやすい世界
+        strength = [math.log(p[i]) + 0.04 * ((h[i]["rating"] or 80) - 80) + rng.gauss(0, 0.8) for i in range(len(p))]
+        order = sorted(range(len(p)), key=lambda i: -strength[i])
+        pops = {i: k + 1 for k, i in enumerate(sorted(range(len(p)), key=lambda i: -p[i]))}
+        rows = [{"place": k + 1, "waku": None, "no": i + 1, "pop": pops[i], "odds": max(1.1, round(0.8 / p[i], 1)),
+                 "firstCorner": None, "name": "", "style": None} for k, i in enumerate(order)]
+        fuku = {rows[k]["no"]: max(100, int(rows[k]["odds"] * 30) // 10 * 10) for k in range(3)}
+        return {"rows": rows, "field": len(rows), "payout": {}, "fukusho": fuku}
 
     def trend(self, race_id, date):
         info = self._info(race_id)
@@ -384,7 +411,50 @@ class MockProvider:
 # ---------------------------------------------------------------------------
 # HTTP サーバー
 # ---------------------------------------------------------------------------
+class BacktestJob:
+    """バックテストは時間がかかるので別スレッドで実行し、進捗を返す"""
+
+    def __init__(self, provider):
+        self.provider = provider
+        self.lock = threading.Lock()
+        self.state = {"status": "idle"}
+        self.races = []
+        self._cancel = False
+
+    def start(self, d_from, d_to, scope, temperature):
+        with self.lock:
+            if self.state.get("status") == "running":
+                raise ValueError("既に実行中です")
+            self._cancel = False
+            self.state = {"status": "running", "done": 0, "total": 0, "message": "開始", "params":
+                          {"from": d_from.isoformat(), "to": d_to.isoformat(), "scope": scope}}
+
+        def progress(done, total, message):
+            self.state.update(done=done, total=total, message=message)
+
+        def run():
+            try:
+                self.races = B.collect(self.provider, d_from, d_to, scope, progress, lambda: self._cancel)
+                result = B.evaluate(self.races, temperature)
+                self.state.update(status="cancelled" if self._cancel else "done", result=result)
+            except Exception as e:
+                self.state.update(status="error", message=str(e))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def cancel(self):
+        self._cancel = True
+
+    def reevaluate(self, temperature):
+        if not self.races:
+            raise ValueError("先にバックテストを実行してください")
+        self.state["result"] = B.evaluate(self.races, temperature)
+        return self.state
+
+
 def make_handler(provider):
+    job = BacktestJob(provider)
+
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=ROOT, **kw)
@@ -415,6 +485,22 @@ def make_handler(provider):
                     if not re.fullmatch(r"\d{8}", date):
                         return self._json(400, {"error": "date は YYYYMMDD 形式"})
                     return self._json(200, {"races": provider.races(date)})
+                if url.path == "/api/backtest/start":
+                    try:
+                        d_from, d_to = A.parse_date(q["from"]), A.parse_date(q["to"])
+                    except (KeyError, ValueError):
+                        return self._json(400, {"error": "from/to は YYYYMMDD 形式"})
+                    if d_from > d_to or (d_to - d_from).days > 400:
+                        return self._json(400, {"error": "期間は1年以内で指定してください"})
+                    job.start(d_from, d_to, q.get("scope", "named"), float(q.get("temp", 10)))
+                    return self._json(200, job.state)
+                if url.path == "/api/backtest/status":
+                    return self._json(200, job.state)
+                if url.path == "/api/backtest/cancel":
+                    job.cancel()
+                    return self._json(200, job.state)
+                if url.path == "/api/backtest/reevaluate":
+                    return self._json(200, job.reevaluate(float(q.get("temp", 10))))
                 if url.path in ("/api/horses", "/api/trend"):
                     date = q.get("date", "")
                     if not re.fullmatch(r"\d{8}", date):

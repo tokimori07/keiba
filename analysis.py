@@ -291,10 +291,16 @@ def parse_result(html):
         m = re.search(r'<tr class="%s">.*?class="Payout"><span>(.*?)</span>' % cls, html, re.S)
         if m:
             payout[cls] = to_int(m.group(1).split("<br")[0])
+    fukusho = {}
+    m = re.search(r'<tr class="Fukusho">.*?class="Result">(.*?)</td>.*?class="Payout"><span>(.*?)</span>', html, re.S)
+    if m:
+        nos = [int(x) for x in re.findall(r"<span>(\d+)</span>", m.group(1))]
+        pays = [to_int(x) for x in re.split(r"<br\s*/?>", m.group(2))]
+        fukusho = {no: pay for no, pay in zip(nos, pays) if pay}
     field = sum(1 for r in rows if r["no"])
     for r in rows:
         r["style"] = running_style(r["firstCorner"], field)
-    return {"rows": rows, "field": field, "payout": payout}
+    return {"rows": rows, "field": field, "payout": payout, "fukusho": fukusho}
 
 
 def rough_level(median_tan3):
