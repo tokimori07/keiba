@@ -16,9 +16,9 @@ PAST_ROW = '''<tr class="HorseList" id="tr_1"><td class="Waku3">3</td><td class=
 
 RESULT = '''<table id="All_Result_Table"><tr><th>着順</th></tr>
 <tr><td><div class="Rank">1</div></td><td class="Num Waku7"><div>7</div></td><td class="Num Txt_C"><div>13</div></td>
-<span class="HorseNameSpan">A</span><span class="OddsPeople">5</span><span class="Odds_Ninki">9.8</span><td class="PassageRate">3-2</td></tr>
+<span class="HorseNameSpan">A</span><span class="OddsPeople">5</span><td class="Odds Txt_R">\n<span  class="Odds_Ninki">9.8</span>\n</td><td class="PassageRate">3-2</td></tr>
 <tr><td><div class="Rank">2</div></td><td class="Num Waku1"><div>1</div></td><td class="Num Txt_C"><div>1</div></td>
-<span class="HorseNameSpan">B</span><span class="OddsPeople">1</span><span class="Odds_Ninki">2.1</span><td class="PassageRate">1-1</td></tr>
+<span class="HorseNameSpan">B</span><span class="OddsPeople">1</span><td class="Odds Txt_R">\n<span >2.1</span>\n</td><td class="PassageRate">1-1</td></tr>
 <tr><td><div class="Rank">除外</div></td><td class="Num Waku8"><div>8</div></td><td class="Num Txt_C"><div>16</div></td></tr>
 </table><tr class="Tan3"><th>3連単</th><td class="Payout"><span>52,470円</span></td></tr>
 <tr class="Umaren"><th>馬連</th><td class="Payout"><span>640円</span></td></tr>'''
@@ -58,6 +58,7 @@ class T(unittest.TestCase):
         res = A.parse_result(RESULT)
         self.assertEqual(res["field"], 3)
         self.assertEqual([(r["place"], r["waku"], r["no"], r["pop"]) for r in res["rows"]], [(1, 7, 13, 5), (2, 1, 1, 1), (None, 8, 16, None)])
+        self.assertEqual([r["odds"] for r in res["rows"]], [9.8, 2.1, None])
         self.assertEqual(res["payout"], {"Tan3": 52470, "Umaren": 640})
         t = A.aggregate_trend([{"year": 2025, "venue": "京都", "name": "マイルCS", "result": res}])
         self.assertEqual(t["favorite"], [0, 1, 0, 0])

@@ -736,14 +736,21 @@
       } else {
         $('bt-run').addEventListener('click', start);
         $('bt-cancel').addEventListener('click', () => fetch('/api/backtest/cancel'));
+        $('bt-re').addEventListener('click', async () => {
+          const res = await fetch('/api/backtest/reevaluate?temp=' + ($('bt-temp').value || 10));
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) { toast(body.error || '先に実行してください'); return; }
+          state.backtest = body.result; save(); render(body.result);
+          toast(`メリハリ ${body.result.temperature} で再集計しました`);
+        });
         fetch('/api/backtest/status').then((r) => r.json()).then((st) => { if (st.status === 'running') poll(); }).catch(() => {});
       }
       $('bt-result').addEventListener('click', (e) => {
         if (e.target.dataset.act !== 'apply') return;
-        d().weight = Number(e.target.dataset.w); d().minev = Number(e.target.dataset.e);
+        d().weight = Number(e.target.dataset.w); d().minev = Number(e.target.dataset.e); d().temp = Number(e.target.dataset.t);
         save();
-        $('p-weight').value = d().weight; $('p-minev').value = d().minev; renderAnalysis();
-        toast(`予想タブに反映しました（自分の重み ${d().weight}% / 基準EV ${(d().minev / 100).toFixed(2)}）`);
+        $('p-weight').value = d().weight; $('p-minev').value = d().minev; $('p-temp').value = d().temp; renderAnalysis();
+        toast(`予想タブに反映しました（自分の重み ${d().weight}% / 基準EV ${(d().minev / 100).toFixed(2)} / メリハリ ${d().temp}）`);
       });
       if (state.backtest) render(state.backtest);
     }
@@ -803,8 +810,12 @@
       out.push(`能力1位の馬の勝率 ${pct(t.winRate)}（1番人気は ${pct(f.winRate)}）。` + (t.winRate >= f.winRate
         ? '<b class="pos">市場と同等以上に当てています</b>' : '当てる力そのものは市場（1番人気）の方が上。<b>オッズとの組み合わせが鍵</b>'));
       const u = r.underrated;
-      if (u.n >= 30) out.push(`人気より能力順位が3つ以上高い「過小評価馬」の単勝回収率は <b class="${roiCls(u.tanRoi)}">${pct(u.tanRoi)}</b>（${u.n}頭）。` +
-        (u.tanRoi >= 0.9 ? '市場が見落としている情報を含んでいる可能性があります' : '能力値の情報は、ほぼオッズに織り込み済みです'));
+      if (u.n >= 30) {
+        const wins = Math.round(u.winRate * u.n);
+        out.push(`人気より能力順位が3つ以上高い「過小評価馬」の単勝回収率は <b class="${roiCls(u.tanRoi)}">${pct(u.tanRoi)}</b>（${u.n}頭・${wins}勝）。` +
+          (u.tanRoi >= 0.9 ? '市場が見落としている情報を含んでいる可能性があります' : '能力値の情報は、ほぼオッズに織り込み済みです') +
+          (wins < 30 ? '。ただし勝ち数が少なく、数頭の大穴で数字が大きく動きます' : ''));
+      }
       const sp = r.split;
       if (sp.best && sp.bestTest) {
         const ok = sp.bestTest.roi != null && sp.bestTest.roi >= 1;
@@ -812,6 +823,12 @@
           単勝回収率 <b class="${roiCls(sp.bestTest.roi)}">${pctOr(sp.bestTest.roi)}</b>（${sp.bestTest.bets}点・${sp.bestTest.hits}的中）。同期間に1番人気を買い続けると ${pctOr(sp.favoriteTest.tanRoi)}。` +
           (sp.bestTest.bets < 100 ? ' <b>まだ点数が少なく偶然の影響が大きい</b>ので、期間を広げて再確認してください' : ok ? ' <b class="pos">期間外でもプラス。有望です</b>' : ''));
       }
+      if (!sp.best) out.push('前半期間に十分な点数（50点以上）の設定がなく、最適設定は選べませんでした。期間を広げてください');
+      const hot = r.calibration.filter((c) => c.n >= 20 && c.pred >= 0.2 && c.actual < c.pred * 0.7);
+      if (hot.length) out.push(`推定勝率が高い帯で、実際の勝率が推定を大きく下回っています（推定${pct(hot[hot.length - 1].pred, 0)} → 実際${pct(hot[hot.length - 1].actual, 0)}）。
+        <b>推定が強気すぎる</b>ので「評価のメリハリ」を今（${r.temperature}）より大きくして再集計してください`);
+      const hits = r.grid.filter((g) => g.weight > 0).map((g) => g.hits);
+      if (Math.max(...hits) < 50) out.push(`的中数が最大でも${Math.max(...hits)}回と少なく、回収率は数回の高配当で大きく変わります。<b>半年〜1年分で検証するのが目安</b>です`);
       return out;
     }
 
@@ -828,7 +845,7 @@
         ${W.map((w) => `<tr><th>${w * 100}%${w === 0 ? '（オッズのみ）' : ''}</th>${E.map((e) => {
           const g = cell(w, e);
           const isBest = best && best.weight === w && Math.abs(best.minEv - e) < 1e-9;
-          return `<td class="cell ${isBest ? 'best' : ''}" style="background:${color(g.roi)}">${pctOr(g.roi, 0)}<small>${g.bets}点</small></td>`;
+          return `<td class="cell ${isBest ? 'best' : ''}" style="background:${color(g.roi)}">${pctOr(g.roi, 0)}<small>${g.bets}点・${g.hits}的中</small></td>`;
         }).join('')}</tr>`).join('')}
       </tbody></table></div>`;
     }
@@ -840,7 +857,7 @@
       $('bt-result').innerHTML = `
         <div class="card"><div class="card-head"><h2>総合判定</h2><span class="badge">${esc(r.from)}〜${esc(r.to)}　${r.races}レース・${r.horses}頭</span></div>
           <ul class="insights">${verdicts(r).map((v) => `<li>${v}</li>`).join('')}</ul>
-          ${sp.best ? `<button class="btn primary" data-act="apply" data-w="${sp.best.weight * 100}" data-e="${Math.round(sp.best.minEv * 100)}">この設定（重み${sp.best.weight * 100}%・基準EV ${sp.best.minEv.toFixed(2)}）を予想タブに反映</button>` : ''}
+          ${sp.best ? `<button class="btn primary" data-act="apply" data-w="${sp.best.weight * 100}" data-e="${Math.round(sp.best.minEv * 100)}" data-t="${r.temperature}">この設定（重み${sp.best.weight * 100}%・基準EV ${sp.best.minEv.toFixed(2)}）を予想タブに反映</button>` : ''}
         </div>
         <div class="grid-2">
           <div class="card"><h2>能力★別の成績</h2>${statTable([5, 4, 3, 2, 1].map((s) => ['★'.repeat(s), r.byStars[s]]))}

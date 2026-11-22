@@ -179,7 +179,8 @@ def evaluate(races, temperature=10):
     train, test = races[:cut], races[cut:]
     grid = [simulate(races, w, e, temperature) for w in WEIGHTS for e in MIN_EVS]
     train_grid = [simulate(train, w, e, temperature) for w in WEIGHTS for e in MIN_EVS]
-    candidates = [g for g in train_grid if g["bets"] >= max(20, len(train) // 5) and g["weight"] > 0]
+    # 点数が少ない設定は偶然で高く出やすいので、十分な点数がある設定だけから選ぶ
+    candidates = [g for g in train_grid if g["bets"] >= max(50, len(train) // 2) and g["weight"] > 0]
     best = max(candidates, key=lambda g: g["roi"] or 0) if candidates else None
     best_test = simulate(test, best["weight"], best["minEv"], temperature) if best and test else None
     fav_test = _acc()  # 比較用: 同じ後半期間に1番人気の単勝を毎レース買った場合

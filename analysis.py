@@ -274,7 +274,7 @@ def parse_result(html):
             waku = re.search(r'class="Num Waku\d*"[^>]*>\s*<div>(\d+)', row)
             no = re.search(r'class="Num Txt_C"[^>]*>\s*<div>(\d+)', row)
             pop = re.search(r'class="OddsPeople">(\d+)<', row)
-            odds = re.search(r'class="Odds_Ninki">([\d.]+)<', row)
+            odds = re.search(r'class="Odds Txt_R">\s*<span[^>]*>\s*([\d.]+)\s*<', row)  # 上位人気以外はclassなしのspan
             passing = re.search(r'class="PassageRate">\s*([\d-]+)', row)
             name = re.search(r'class="HorseNameSpan">(.*?)<', row, re.S)
             rows.append({
