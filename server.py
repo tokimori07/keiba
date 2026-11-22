@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -336,13 +337,28 @@ def make_handler(provider):
 
 
 def main():
+    if sys.version_info < (3, 7):
+        sys.exit("Python 3.7 以上が必要です（現在 %s）" % sys.version.split()[0])
     ap = argparse.ArgumentParser(description="競馬ノート ローカルサーバー")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--mock", action="store_true", help="架空データで動かす")
+    ap.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     args = ap.parse_args()
     provider = MockProvider() if args.mock else NetkeibaProvider()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(provider))
-    print(f"競馬ノート: http://localhost:{args.port}  （{'モック' if args.mock else 'netkeiba'}モード / Ctrl+C で終了）")
+    srv = None
+    for port in range(args.port, args.port + 20):  # 使用中なら次の番号を試す
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(provider))
+            break
+        except OSError:
+            continue
+    if srv is None:
+        sys.exit(f"ポート {args.port}〜{args.port + 19} がすべて使用中です。--port で別の番号を指定してください")
+    url = f"http://localhost:{srv.server_address[1]}"
+    print(f"競馬ノート: {url}  （{'モック' if args.mock else 'netkeiba'}モード）")
+    print("このウィンドウを閉じるか Ctrl+C で終了します")
+    if not args.no_browser:
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
