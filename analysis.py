@@ -48,6 +48,13 @@ def race_class(grade_text, race_name, venue):
         return "新馬"
     if "未勝利" in race_name:
         return "未勝利"
+    n = race_name.translate(str.maketrans("１２３", "123"))
+    for c in ("1勝", "2勝", "3勝"):
+        if c in n:
+            return c
+    for old, c in (("500万", "1勝"), ("1000万", "2勝"), ("1600万", "3勝"), ("オープン", "OP")):
+        if old in n:
+            return c
     if venue and venue not in JRA_VENUES:
         return "地方"
     return "不明"
@@ -84,9 +91,11 @@ def parse_past5(html):
         name = re.search(r'class="Horse02">\s*<a[^>]*>(.*?)</a>', row, re.S)
         style = re.search(r'class="kyakusitu">(.*?)<', row)
         jk = re.search(r'<td class="Jockey">.*?/jockey/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
+        tr = re.search(r'class="Horse05">\s*<a[^>]*/trainer/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
+        bw = re.search(r'class="Weight[^"]*">\s*(\d{3})kg(?:<span>\(([-+]?\d+)\)</span>)?', row)
         runs = []
-        for cell in re.findall(r'<td class="Past[^"]*"[^>]*>(.*?)</td>', row, re.S):
-            run = parse_past_cell(cell)
+        for rid, cell in re.findall(r'<td class="Past[^"]*"(?:\s+id="myhorse_(\d+)")?[^>]*>(.*?)</td>', row, re.S):
+            run = parse_past_cell(cell, rid)
             if run:
                 runs.append(run)
         out[int(no.group(1))] = {
@@ -96,12 +105,24 @@ def parse_past5(html):
             "style": strip_tags(style.group(1)) if style else "",
             "jockeyId": jk.group(1) if jk else "",
             "jockey": strip_tags(jk.group(2)) if jk else "",
+            "trainerId": tr.group(1) if tr else "",
+            "trainer": strip_tags(tr.group(2)) if tr else "",
+            "bodyWeight": int(bw.group(1)) if bw else None,
+            "weightDiff": int(bw.group(2)) if bw and bw.group(2) else None,
             "runs": runs,
         }
     return out
 
 
-def parse_past_cell(cell):
+def to_seconds(s):
+    """'1:54.2' → 114.2、'58.9' → 58.9"""
+    m = re.fullmatch(r"\s*(?:(\d+):)?(\d+(?:\.\d)?)\s*", s or "")
+    if not m:
+        return None
+    return int(m.group(1) or 0) * 60 + float(m.group(2))
+
+
+def parse_past_cell(cell, race_id=""):
     d1 = re.search(r'class="Data01">\s*<span>(.*?)</span>\s*<span class="Num">(.*?)</span>', cell, re.S)
     if not d1:
         return None
@@ -112,12 +133,15 @@ def parse_past_cell(cell):
     race_name = strip_tags(re.sub(r'<span class="Icon_GradeType.*?</span>', "", d2.group(1), flags=re.S)) if d2 else ""
     d5 = strip_tags((re.search(r'class="Data05">(.*?)</div>', cell, re.S) or [None, ""])[1])
     course = re.search(r"(芝|ダ|障)\s*(\d{3,4})", d5)
+    tm = re.search(r"\d{3,4}\s+(\d+:\d+\.\d|\d+\.\d)", d5)
+    cond = re.search(r"(良|稍|重|不)", d5)
     d3 = strip_tags((re.search(r'class="Data03">(.*?)</div>', cell, re.S) or [None, ""])[1])
     field = re.search(r"(\d+)頭", d3)
     pop = re.search(r"(\d+)人", d3)
     d6 = strip_tags((re.search(r'class="Data06">(.*?)</div>', cell, re.S) or [None, ""])[1])
     passing = re.match(r"([\d-]+)", d6)
     last3f = re.search(r"\((\d+\.\d)\)", d6)
+    bw = re.search(r"(\d{3})\((-?\+?\d+|前計不)\)", d6)
     d7 = strip_tags((re.search(r'class="Data07">(.*?)</div>', cell, re.S) or [None, ""])[1])
     margin = re.search(r"\((-?\d+\.\d)\)\s*$", d7)
     venue = dv[1] if len(dv) > 1 else ""
@@ -137,6 +161,11 @@ def parse_past_cell(cell):
         "margin": float(margin.group(1)) if margin else None,
         "last3f": float(last3f.group(1)) if last3f else None,
         "style": running_style(first_corner, n),
+        "raceId": race_id,
+        "time": to_seconds(tm.group(1)) if tm else None,
+        "cond": cond.group(1) if cond else "",
+        "firstCorner": first_corner,
+        "bodyWeight": int(bw.group(1)) if bw else None,
     }
 
 
@@ -282,6 +311,9 @@ def parse_result(html):
             passing = re.search(r'class="PassageRate">\s*([\d-]+)', row)
             name = re.search(r'class="HorseNameSpan">(.*?)<', row, re.S)
             jk = re.search(r'/jockey/result/recent/(\d+)/?"[^>]*>\s*<span class="JockeyNameSpan">(.*?)</span>', row, re.S)
+            tr = re.search(r'/trainer/result/recent/(\d+)/?"[^>]*>\s*<span class="TrainerNameSpan">(.*?)</span>', row, re.S)
+            times = re.findall(r'<td class="Time[^"]*">(.*?)</td>', row, re.S)
+            bw = re.search(r'class="Weight">\s*(\d{3})\s*(?:<small>\(([-+]?\d+)\)</small>)?', row)
             rows.append({
                 "jockeyId": jk.group(1) if jk else "",
                 "jockey": strip_tags(jk.group(2)) if jk else "",
@@ -292,6 +324,12 @@ def parse_result(html):
                 "odds": float(odds.group(1)) if odds else None,
                 "firstCorner": to_int(passing.group(1).split("-")[0]) if passing else None,
                 "name": strip_tags(name.group(1)) if name else "",
+                "trainerId": tr.group(1) if tr else "",
+                "trainer": strip_tags(tr.group(2)) if tr else "",
+                "time": to_seconds(strip_tags(times[0])) if times else None,
+                "last3f": to_float(strip_tags(times[2])) if len(times) > 2 else None,
+                "bodyWeight": int(bw.group(1)) if bw else None,
+                "weightDiff": int(bw.group(2)) if bw and bw.group(2) else None,
             })
     payout = {}
     for cls in ("Tansho", "Umaren", "Wide", "Umatan", "Fuku3", "Tan3"):
@@ -307,7 +345,16 @@ def parse_result(html):
     field = sum(1 for r in rows if r["no"])
     for r in rows:
         r["style"] = running_style(r["firstCorner"], field)
-    return {"rows": rows, "field": field, "payout": payout, "fukusho": fukusho}
+    for r in rows:  # 上がり3Fの順位（レース内）
+        r["last3fRank"] = (1 + sum(1 for o in rows if o["last3f"] and r["last3f"] and o["last3f"] < r["last3f"])) if r["last3f"] else None
+    cond = re.search(r'class="Item04">\s*(良|稍|重|不)', html)
+    d2 = re.search(r'class="RaceData02">(.*?)</div>', html, re.S)
+    grade = re.search(r'Icon_GradeType(\d+)', html[:html.find("All_Result_Table")] if "All_Result_Table" in html else "")
+    cls_text = strip_tags(d2.group(1)) if d2 else ""
+    cls = {"1": "G1", "2": "G2", "3": "G3", "15": "L", "5": "OP"}.get(grade.group(1)) if grade else None
+    cls = cls or race_class("", cls_text, "")
+    return {"rows": rows, "field": field, "payout": payout, "fukusho": fukusho,
+            "cond": (cond.group(1)[0] if cond else ""), "class": cls}
 
 
 def rough_level(median_tan3):
@@ -410,9 +457,59 @@ def parse_date(s):
 # ---------------------------------------------------------------------------
 # 学習モデル用の特徴量（その馬の近5走から、レース前に分かる情報だけ）
 # ---------------------------------------------------------------------------
-def horse_features(runs, surface, distance, race_date):
-    """数値の特徴量（欠損は None）。レース内での標準化は learn.py で行う"""
+def course_key(venue, surface, distance):
+    return f"{venue}|{surface}|{distance}"
+
+
+def build_standards(results):
+    """
+    コースごとの基準（タイム指数・上がりの物差し）
+      results: [(venue, surface, distance, parse_result の結果)]
+      time: 勝ち時計の中央値、up: 5着以内の馬の上がり3Fの中央値
+    """
+    win, up = {}, {}
+    for venue, surface, distance, res in results:
+        k = course_key(venue, surface, distance)
+        for r in res.get("rows", []):
+            if r.get("place") == 1 and r.get("time"):
+                win.setdefault(k, []).append(r["time"])
+            if r.get("last3f") and r.get("place") and r["place"] <= 5:
+                up.setdefault(k, []).append(r["last3f"])
+    return {"time": {k: statistics.median(v) for k, v in win.items() if len(v) >= 3},
+            "up": {k: statistics.median(v) for k, v in up.items() if len(v) >= 8}}
+
+
+COND_ADJ = {"良": 0.0, "稍": 0.4, "重": 0.8, "不": 1.2}  # 2000mあたりの馬場の重さ（秒）
+
+
+def speed_index(run, std):
+    """タイム指数: コースの基準タイムより速いほど高い（1000mあたり0.1秒＝1点）"""
+    k = course_key(run.get("venue"), run.get("surface"), run.get("distance"))
+    t = (std or {}).get("time", {}).get(k)
+    if not t or not run.get("time") or run.get("place") is None:
+        return None
+    d = run["distance"]
+    adj = COND_ADJ.get(run.get("cond"), 0.0) * d / 2000 * (1 if run["surface"] == "芝" else -0.5)
+    return (t + adj - run["time"]) / d * 10000
+
+
+def up_index(run, std):
+    """上がり指数: コースの基準より上がり3Fが速いほど高い（秒）"""
+    k = course_key(run.get("venue"), run.get("surface"), run.get("distance"))
+    u = (std or {}).get("up", {}).get(k)
+    return (u - run["last3f"]) if u and run.get("last3f") else None
+
+
+def horse_features(runs, surface, distance, race_date, ctx=None):
+    """
+    数値の特徴量（欠損は None）。レース内での標準化は learn.py で行う
+    ctx（任意）: std=コース基準, class_of(raceId)=過去走のクラス, up_rank_of(raceId, 上がり)=上がり順位(0〜1),
+                 weight_diff=今回の馬体重の増減, cur_class=今回のクラス
+    """
+    ctx = ctx or {}
+    class_of = ctx.get("class_of") or (lambda rid: None)
     runs = [r for r in runs if r["date"] < race_date]
+    runs = [dict(r, **{"class": class_of(r.get("raceId")) or r["class"]}) if r.get("raceId") else r for r in runs]
     valid = [r for r in runs if r["place"] is not None and r["surface"] != "障"]
     scores = [run_score(r) for r in valid]
     last = valid[0] if valid else None
@@ -426,6 +523,19 @@ def horse_features(runs, surface, distance, race_date):
             days = None
     same = [r for r in valid if r["surface"] == surface and r["distance"] and distance
             and abs(r["distance"] - distance) <= 200]
+    std = ctx.get("std")
+    sp = [s for s in (speed_index(r, std) for r in valid) if s is not None]
+    ups = [u for u in (up_index(r, std) for r in valid[:3]) if u is not None]
+    hidden = None
+    if last and last.get("field") and ctx.get("up_rank_of"):
+        rank = ctx["up_rank_of"](last.get("raceId"), last.get("last3f"))
+        if rank is not None:
+            hidden = last["place"] / last["field"] - rank  # 上がりは上位なのに着順が悪い＝隠れた好内容
+    class_up = 0.0
+    cur = ctx.get("cur_class")
+    if last and cur in CLASS_LEVEL and last["class"] in CLASS_LEVEL and "不明" not in (cur, last["class"]):
+        class_up = (CLASS_LEVEL[cur] - CLASS_LEVEL[last["class"]]) / 4
+    wd = ctx.get("weight_diff")
     return {
         "rating": rate_horse(runs, surface, distance),
         "last": scores[0] if scores else None,
@@ -434,7 +544,20 @@ def horse_features(runs, surface, distance, race_date):
         "logDays": math.log(max(days, 7)) if days is not None else None,
         "runs": len(runs),
         "sameTop3": (sum(1 for r in same if r["place"] <= 3) + 0.5) / (len(same) + 2),  # 件数が少ないときは平均へ寄せる
+        "spBest": max(sp) if sp else None,
+        "upAvg": sum(ups) / len(ups) if ups else None,
+        "hidden": hidden,
+        "wDiff": wd / 10 if wd is not None else None,
+        "classUp": class_up,
     }
+
+
+def current_class(grade, name, venue=""):
+    """今回のレースのクラス（重賞はグレード、それ以外はレース名から）"""
+    g = (grade or "").replace("Ｇ", "G")
+    if g in ("G1", "G2", "G3", "L", "OP"):
+        return g
+    return race_class("", name or "", venue)
 
 
 # ---------------------------------------------------------------------------

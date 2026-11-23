@@ -16,17 +16,23 @@ import os
 FEATURES = [
     ("market", "市場の評価（オッズ）", "単勝オッズから見た勝率（対数）"),
     ("rating", "能力値", "近5走の着差とクラスから算出（レース内で標準化）"),
-    ("last", "前走の内容", "前走のパフォーマンス（レース内で標準化）"),
-    ("best", "近5走のベスト", "近5走で最も良かったパフォーマンス（レース内で標準化）"),
+    ("spBest", "タイム指数", "近5走の最高タイム指数（コースの基準タイムと馬場で補正・レース内で標準化）"),
+    ("upAvg", "上がりの速さ", "近3走の上がり3Fがコースの基準よりどれだけ速いか（レース内で標準化）"),
+    ("hidden", "前走の隠れた好内容", "前走の着順の悪さ − 上がり順位の悪さ（上がりは上位なのに負けた馬が高い）"),
     ("lastPlace", "前走の着順", "前走の着順÷頭数（小さいほど上位）"),
+    ("wDiff", "馬体重の増減", "当日の馬体重の増減（10kg単位）"),
     ("logDays", "休養明け", "前走からの日数（対数）"),
     ("sameTop3", "同条件の実績", "同じ馬場・近い距離での3着内率"),
+    ("classUp", "クラス替わり", "前走からの昇級（＋）・降級（−）"),
     ("jockey", "騎手", "騎手の3着内率（騎乗数が少ないと平均に寄せる・レース内で標準化）"),
+    ("trainer", "厩舎", "厩舎の3着内率（出走数が少ないと平均に寄せる・レース内で標準化）"),
     ("fewRuns", "キャリアの浅さ", "近走が3走以下"),
     ("noData", "情報なし", "近走データがない"),
 ]
 KEYS = [k for k, _, _ in FEATURES]
-ZSCORE = ("rating", "last", "best", "jockey")  # レース内で標準化する特徴量
+ZSCORE = ("rating", "spBest", "upAvg", "jockey", "trainer")  # レース内で標準化する特徴量
+NEUTRAL_MISSING = ("jockey", "trainer")  # 欠損は平均扱い（それ以外の欠損はやや下に置く）
+DEFAULTS = {"lastPlace": 0.5, "logDays": math.log(60), "sameTop3": 0.2, "hidden": 0.0, "wDiff": 0.0, "classUp": 0.0}
 
 
 def design(horses, market_p):
@@ -39,23 +45,25 @@ def design(horses, market_p):
         if len(ok) >= 2:
             m = sum(ok) / len(ok)
             sd = math.sqrt(sum((v - m) ** 2 for v in ok) / len(ok)) or 1.0
-            cols[k] = [((v - m) / sd) if v is not None else (0.0 if k == "jockey" else -0.5) for v in vals]  # 情報なしはやや下に置く
+            cols[k] = [((v - m) / sd) if v is not None else (0.0 if k in NEUTRAL_MISSING else -0.5) for v in vals]
         else:
             cols[k] = [0.0] * len(vals)
     X = []
     for i, f in enumerate(feats):
-        X.append([
-            math.log(max(market_p[i], 1e-6)),
-            cols["rating"][i],
-            cols["last"][i],
-            cols["best"][i],
-            f.get("lastPlace") if f.get("lastPlace") is not None else 0.5,
-            f.get("logDays") if f.get("logDays") is not None else math.log(60),
-            f.get("sameTop3", 0.2),
-            cols["jockey"][i],
-            1.0 if f.get("runs", 0) <= 3 else 0.0,
-            1.0 if f.get("rating") is None else 0.0,
-        ])
+        row = []
+        for k in KEYS:
+            if k == "market":
+                row.append(math.log(max(market_p[i], 1e-6)))
+            elif k in cols:
+                row.append(cols[k][i])
+            elif k == "fewRuns":
+                row.append(1.0 if f.get("runs", 0) <= 3 else 0.0)
+            elif k == "noData":
+                row.append(1.0 if f.get("rating") is None else 0.0)
+            else:
+                v = f.get(k)
+                row.append(v if v is not None else DEFAULTS.get(k, 0.0))
+        X.append(row)
     return X
 
 
@@ -191,7 +199,7 @@ def add_jockey_feature(races):
     races は日付順に処理し、同じ日のレースの結果はその日が終わってから加算する
     """
     from analysis import JockeyStats
-    stats = JockeyStats()
+    stats, trainers = JockeyStats(), JockeyStats()
     races = sorted(races, key=lambda r: (r["date"], r["race_id"]))
     i = 0
     while i < len(races):
@@ -204,13 +212,16 @@ def add_jockey_feature(races):
             for h in race["horses"]:
                 if h.get("feat") is not None:
                     h["feat"]["jockey"] = stats.rate(h["jockeyId"]) if h.get("jockeyId") else None
+                    h["feat"]["trainer"] = trainers.rate(h["trainerId"]) if h.get("trainerId") else None
         for race in same_day:
             for h in race["horses"]:
                 stats.add(h.get("jockeyId"), h.get("jockey"), h["place"])
+                if h.get("trainerId"):
+                    trainers.add(h["trainerId"], "", h["place"])
     return races
 
 
-def evaluate(races, l2=None):
+def evaluate(races, l2=None, std=None):
     """前半70%で学習 → 後半30%で「市場（オッズ）だけ」と比べて評価"""
     races = add_jockey_feature(races)
     cut = int(len(races) * 0.7)
@@ -260,7 +271,7 @@ def evaluate(races, l2=None):
         "improvement": (ll_market - ll_model) / ll_market if ll_market else None,
         "topModel": top_model / n if n else None, "topMarket": top_market / n if n else None,
         "evBands": ev_rows, "calibration": calib,
-        "testModel": model["beta"], "model": {**full, "trainedAt": races[-1]["date"], "from": races[0]["date"]},
+        "testModel": model["beta"], "model": {**full, "trainedAt": races[-1]["date"], "from": races[0]["date"], "std": std or {}},
         "features": [{"key": k, "label": lb, "desc": d} for k, lb, d in FEATURES],
     }
 

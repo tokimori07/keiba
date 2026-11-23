@@ -70,6 +70,34 @@ if __name__ == "__main__": unittest.main()
 
 
 class Payouts(unittest.TestCase):
+    def test_class_from_name(self):
+        self.assertEqual(A.race_class("", "3歳以上1勝クラス", "東京"), "1勝")
+        self.assertEqual(A.race_class("", "サラ系３歳以上 ２勝クラス", ""), "2勝")
+        self.assertEqual(A.race_class("", "城崎特別", "阪神"), "不明")
+
+    def test_past_cell_extras(self):
+        run = A.parse_past5(PAST_ROW)[5]["runs"][0]
+        self.assertAlmostEqual(run["time"], 82.9)
+        self.assertEqual(run["cond"], "稍")
+        self.assertEqual(run["bodyWeight"], 492)
+
+    def test_speed_and_up_index(self):
+        res = {"rows": [{"place": 1, "time": 83.0, "last3f": 36.0}] + [{"place": 3, "time": 83.5, "last3f": 36.4}] * 8}
+        std = A.build_standards([("東京", "ダ", 1400, res)] * 3)
+        run = {"venue": "東京", "surface": "ダ", "distance": 1400, "time": 82.9, "cond": "良", "place": 2, "last3f": 35.9}
+        self.assertGreater(A.speed_index(run, std), 0)       # 基準より速い
+        self.assertGreater(A.up_index(run, std), 0)
+        slow = dict(run, time=84.0)
+        self.assertLess(A.speed_index(slow, std), A.speed_index(run, std))
+
+    def test_features_with_context(self):
+        runs = A.parse_past5(PAST_ROW)[5]["runs"]
+        f = A.horse_features(runs, "ダ", 1400, "2026-11-20",
+                             {"weight_diff": 12, "cur_class": "G3", "up_rank_of": lambda rid, u: 0.1})
+        self.assertAlmostEqual(f["wDiff"], 1.2)
+        self.assertGreater(f["classUp"], 0)                  # OP → G3 は昇級
+        self.assertAlmostEqual(f["hidden"], 2 / 16 - 0.1)
+
     def test_parse_payouts(self):
         html = '''<tr class="Tansho"><th>単勝</th><td class="Result"><div><span>15</span></div><div><span></span></div></td>
 <td class="Payout"><span>180円</span></td></tr>

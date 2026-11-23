@@ -42,14 +42,17 @@ def in_scope(race, scope):
     return True
 
 
-def build_race(info, past, result, race_date):
-    """1レース分の馬ごとの行（能力値・人気・オッズ・着順・複勝払戻）"""
+def build_race(info, past, result, race_date, ctx=None):
+    """1レース分の馬ごとの行（能力値・人気・オッズ・着順・複勝払戻）。ctx は A.horse_features に渡す共通情報"""
     by_no = {r["no"]: r for r in result["rows"] if r["no"]}
+    ctx = dict(ctx or {}, cur_class=A.current_class(info.get("grade"), info.get("name"), info.get("venue")))
     ratings, feats = {}, {}
     for no, h in past.items():
         runs = [r for r in h["runs"] if r["date"] < race_date]  # 念のため未来の情報を除外
         ratings[no] = A.rate_horse(runs, info.get("surface"), info.get("distance"))
-        feats[no] = A.horse_features(runs, info.get("surface"), info.get("distance"), race_date)
+        wd = (by_no.get(no) or {}).get("weightDiff")
+        feats[no] = A.horse_features(runs, info.get("surface"), info.get("distance"), race_date,
+                                     dict(ctx, weight_diff=wd if wd is not None else h.get("weightDiff")))
     horses = []
     for no, r in by_no.items():
         if r["odds"] is None or r["place"] is None:  # 取消・除外・中止は対象外
@@ -57,6 +60,7 @@ def build_race(info, past, result, race_date):
         horses.append({
             "no": no, "rating": ratings.get(no), "pop": r["pop"], "odds": r["odds"],
             "jockeyId": r.get("jockeyId", ""), "jockey": r.get("jockey", ""),
+            "trainerId": r.get("trainerId") or (past.get(no) or {}).get("trainerId", ""),
             "place": r["place"], "fukusho": result.get("fukusho", {}).get(no, 0),
             "feat": feats.get(no) or A.horse_features([], info.get("surface"), info.get("distance"), race_date),
         })
@@ -79,7 +83,7 @@ def collect(provider, d_from, d_to, scope, progress=None, cancelled=lambda: Fals
     dates = list(race_dates(d_from, d_to))
     for i, d in enumerate(dates):
         if cancelled():
-            return []
+            return [], {}
         if progress:
             progress(0, 0, f"レース一覧を確認中 {d.isoformat()}（{i + 1}/{len(dates)}日）")
         try:
@@ -89,7 +93,7 @@ def collect(provider, d_from, d_to, scope, progress=None, cancelled=lambda: Fals
         for r in day:
             if in_scope(r, scope):
                 targets.append((d, r))
-    races = []
+    got = []
     for i, (d, info) in enumerate(targets):
         if cancelled():
             break
@@ -100,12 +104,39 @@ def collect(provider, d_from, d_to, scope, progress=None, cancelled=lambda: Fals
             result = provider.result(info["race_id"])
         except Exception:  # 1レースの失敗で全体を止めない
             continue
-        race = build_race(info, past, result, d.isoformat())
-        if race:
-            races.append(race)
+        got.append((d, info, past, result))
     if progress:
         progress(len(targets), len(targets), "集計中")
-    return races
+    # コースの基準タイム・上がり（タイム指数の物差し）は集めた結果から作る
+    std = A.build_standards([(info["venue"], info.get("surface"), info.get("distance"), res) for _, info, _, res in got])
+    ctx = {"std": std, **past_lookups(provider, {info["race_id"]: res for _, info, _, res in got})}
+    races = []
+    for d, info, past, result in got:
+        race = build_race(info, past, result, d.isoformat(), ctx)
+        if race:
+            races.append(race)
+    return races, std
+
+
+def past_lookups(provider, known):
+    """過去走のクラスと上がり順位を、保存済みの結果ページから引く（通信はしない）"""
+    memo = dict(known)
+    def get(rid):
+        if not rid:
+            return None
+        if rid not in memo:
+            memo[rid] = provider.cached_result(rid) if hasattr(provider, "cached_result") else None
+        return memo[rid]
+    def class_of(rid):
+        res = get(rid)
+        return res.get("class") if res else None
+    def up_rank_of(rid, last3f):
+        res = get(rid)
+        ups = [r["last3f"] for r in (res or {}).get("rows", []) if r.get("last3f")]
+        if not ups or not last3f:
+            return None
+        return (1 + sum(1 for u in ups if u < last3f)) / len(ups)
+    return {"class_of": class_of, "up_rank_of": up_rank_of}
 
 
 # ---------------------------------------------------------------------------

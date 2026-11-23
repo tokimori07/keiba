@@ -39,7 +39,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.22-e"
+APP_VERSION = "2026.11.23-a"
 MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
@@ -159,14 +159,14 @@ class NetkeibaProvider:
         past = A.parse_past5(html)
         report = {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
         add_jockeys(report, past, self.jockey_index())
-        return with_model(report, past, date)
+        return with_model(report, past, date, self.trainer_index(), B.past_lookups(self, {}))
 
     # ---- 騎手の成績（保存済みの過去レース結果から集計）----
     def jockey_index(self):
         files = [f for f in os.listdir(self.CACHE_DIR)] if os.path.isdir(self.CACHE_DIR) else []
         if getattr(self, "_jk", None) and self._jk[0] == len(files):
             return self._jk[1]
-        stats = A.JockeyStats()
+        stats, trainers = A.JockeyStats(), A.JockeyStats()
         for f in files:
             if not (f.endswith(".html") or f.endswith(".html.gz")):
                 continue
@@ -175,8 +175,14 @@ class NetkeibaProvider:
                 continue
             for r in A.parse_result(html)["rows"]:
                 stats.add(r.get("jockeyId"), r.get("jockey"), r["place"])
+                trainers.add(r.get("trainerId"), r.get("trainer"), r["place"])
         self._jk = (len(files), stats)
+        self._tr = trainers
         return stats
+
+    def trainer_index(self):
+        self.jockey_index()
+        return self._tr
 
     # ---- 払戻（馬券の自動精算）----
     def payout(self, race_id):
@@ -192,6 +198,12 @@ class NetkeibaProvider:
 
     def result(self, race_id):
         return A.parse_result(self._get(f"{self.BASE}/race/result.html?race_id={race_id}", ttl=86400, persist=True))
+
+    def cached_result(self, race_id):
+        """保存済みなら結果を返す（通信しない）"""
+        html = read_cache(os.path.join(self.CACHE_DIR, hashlib.sha1(
+            f"{self.BASE}/race/result.html?race_id={race_id}".encode()).hexdigest()))
+        return A.parse_result(html) if html and "All_Result_Table" in html else None
 
     # ---- レース傾向（過去10年）----
     def trend(self, race_id, date):
@@ -238,17 +250,23 @@ def add_jockeys(report, past, stats):
         h["jockey"] = stats.info(p.get("jockeyId", ""), p.get("jockey", "")) if p.get("jockeyId") else None
 
 
-def with_model(report, past, date):
+def with_model(report, past, date, trainers=None, lookups=None):
     """学習モデルが保存されていれば、各馬の「市場以外の強さ」を付ける（最新オッズとの合成は画面側）"""
     model = L.load_model(ROOT)
     if not model:
         return report
+    if any(k not in model.get("beta", {}) for k in L.KEYS):
+        return report  # 古い形式の学習結果（材料が違う）は使わない。検証タブで学習し直す
     d = date if "-" in date else f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    ctx = {"std": model.get("std"), **(lookups or {}),
+           "cur_class": A.current_class(report.get("grade"), report.get("name"), report.get("venue"))}
     hs = report["horses"]
     for h in hs:
-        runs = past.get(h["no"], {}).get("runs", [])
-        h["feat"] = A.horse_features(runs, report.get("surface"), report.get("distance"), d)
+        p = past.get(h["no"], {})
+        h["feat"] = A.horse_features(p.get("runs", []), report.get("surface"), report.get("distance"), d,
+                                     dict(ctx, weight_diff=p.get("weightDiff")))
         h["feat"]["jockey"] = h["jockey"]["rate"] if h.get("jockey") else None
+        h["feat"]["trainer"] = trainers.rate(p["trainerId"]) if trainers and p.get("trainerId") else None
     for h, u in zip(hs, L.own_strength(model, hs)):
         h["ownU"] = round(u, 4)
         h.pop("feat", None)
@@ -543,7 +561,7 @@ class BacktestJob:
 
         def run():
             try:
-                self.races = B.collect(self.provider, d_from, d_to, scope, progress, lambda: self._cancel)
+                self.races, self.std = B.collect(self.provider, d_from, d_to, scope, progress, lambda: self._cancel)
                 result = B.evaluate(self.races, temperature)
                 self.state.update(status="cancelled" if self._cancel else "done", result=result)
             except Exception as e:
@@ -559,7 +577,7 @@ class BacktestJob:
             raise ValueError("先に検証タブでバックテストを実行してください（学習データになります）")
         if not all("feat" in h for r in self.races for h in r["horses"]):
             raise ValueError("古い形式のデータです。もう一度バックテストを実行してください")
-        self.learned = L.evaluate(self.races)
+        self.learned = L.evaluate(self.races, std=getattr(self, "std", None))
         graded = [r for r in self.races if r.get("grade") in ("G1", "G2", "G3")]
         test_from = self.learned["testFrom"]
         g_test = [r for r in graded if r["date"] >= test_from]
