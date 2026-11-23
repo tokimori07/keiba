@@ -17,7 +17,7 @@
     draft: {
       date: today(), venue: '東京', race: 11, name: '',
       weight: 50, temp: 10, minev: 110, comboType: 'quinella', comboSort: 'p',
-      raceId: '', comboOdds: {}, horseInfo: {}, trend: null,
+      raceId: '', comboOdds: {}, horseInfo: {}, trend: null, aim: 'balance', aimUnit: 100,
       method: 'learned', sort: 'no', editMode: false, raceMeta: {}, modelInfo: null,
       horses: [],
     },
@@ -174,6 +174,26 @@
     $('s-summary').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-act=rec]'); if (!btn) return;
       prefillBet({ type: btn.dataset.type, sel: btn.dataset.sel, ev: Number(btn.dataset.ev), stake: Number(btn.dataset.bet) || '' });
+    });
+
+    $('s-aim').addEventListener('click', (e) => {
+      const t = e.target.closest('button'); if (!t) return;
+      const box = $('s-aim');
+      if (t.dataset.aim) {
+        d().aim = t.dataset.aim; save(); renderAnalysis();
+        AIMS[d().aim].types.forEach((type) => Fetch.combos(false, type));
+      } else if (t.dataset.act === 'rec1') {
+        const c = box._list[Number(t.dataset.i)];
+        prefillBet({ type: COMBO_TO_BET[c.type], sel: c.nos.join(c.ordered ? '→' : '-'), ev: c.real ? c.ev : '', stake: Number(d().aimUnit) || 100 });
+      } else if (t.dataset.act === 'recall') {
+        if (!box._list || !box._list.length) return;
+        if (!d().raceId && !d().name) { toast('先にレースを選んでください'); return; }
+        recordAim(box._list, Number(d().aimUnit) || 100);
+      }
+    });
+    $('s-aim').addEventListener('change', (e) => {
+      if (e.target.id !== 'aim-unit') return;
+      d().aimUnit = Math.max(100, Math.round(Number(e.target.value) / 100) * 100 || 100); save(); renderAnalysis();
     });
 
     $('p-combo-type').innerHTML = Object.entries(COMBO_TO_BET)
@@ -373,6 +393,7 @@
     }).join('') || '<tr><td colspan="8" class="empty">上で重賞を選んで「取得」を押してください（手入力もできます）</td></tr>';
 
     renderSummary(res);
+    renderAim(res);
     renderBanner();
 
     // ---- 組み合わせ ----
@@ -402,6 +423,106 @@
         <td><button class="btn small" data-act="rec">記録</button></td>
       </tr>`;
     }).join('');
+  }
+
+  // ---------- 狙い別のおすすめ ----------
+  // 1年分（約2,750レース）の検証: 各帯の組み合わせを全部買った場合の回収率（理論倍率で分類）
+  const PAYOUT_RATE = { wide: 0.775, quinella: 0.775, exacta: 0.75, trio: 0.75, trifecta: 0.725 };
+  const AIMS = {
+    hit: { icon: '🎯', label: '的中重視', types: ['wide'], min: 1.5, max: 8, points: 3,
+      desc: '当てる回数を優先。人気サイドのワイドを少点数で',
+      record: '過去1年の実績: この帯のワイドは回収率 約80〜84%・的中率 20〜38%（1点あたり）' },
+    balance: { icon: '⚖️', label: 'バランス', types: ['quinella', 'trio'], min: 8, max: 60, points: 6,
+      desc: '中穴の馬連・3連複。払戻率に対して最も損が小さかった帯',
+      record: '過去1年の実績: 理論3〜20倍の3連複は回収率 約84〜89%（全券種でいちばん良い帯）' },
+    manken: { icon: '💰', label: '万馬券狙い', types: ['trio', 'trifecta'], min: 100, max: 1000, points: 10,
+      desc: '払戻1万円以上（100倍〜1000倍）の3連複・3連単',
+      record: '過去1年の実績: 100〜1000倍の帯は回収率 約69〜78%。的中は1点あたり0.1〜0.5%程度で、外れが続く前提で' },
+    jackpot: { icon: '🚀', label: '10万馬券', types: ['trifecta'], min: 1000, max: Infinity, points: 20,
+      desc: '払戻10万円以上の3連単。夢を買う枠',
+      record: '過去1年の実績: 1000倍以上の3連単は回収率 約68%。年に数回当たるかどうかの水準' },
+  };
+
+  function aimCandidates(res, aim) {
+    const info = AIMS[aim];
+    const out = [];
+    info.types.forEach((type) => {
+      const ordered = type === 'exacta' || type === 'trifecta';
+      const raw = (d().comboOdds || {})[type];
+      const real = raw && raw.__rid === d().raceId ? raw : null;
+      res.combos[type].forEach((c) => {
+        const nos = ordered ? c.nos : c.nos.slice().sort((a, b) => a - b);
+        const o = real ? real[nos.join('-')] : undefined;
+        const odds = o || c.fairOdds * PAYOUT_RATE[type];  // 実オッズがなければ推定（理論倍率×払戻率）
+        if (!(odds >= info.min && odds < info.max)) return;
+        out.push({ type, nos, p: c.p, odds, real: !!o, ev: c.p * odds, ordered });
+      });
+    });
+    const anyReal = out.some((c) => c.real);
+    // 実オッズがあれば（実オッズのある買い目だけで）期待値順、なければ推定的中率順
+    const pool = anyReal ? out.filter((c) => c.real) : out;
+    pool.sort((a, b) => (anyReal ? b.ev - a.ev : b.p - a.p));
+    return { list: pool.slice(0, info.points), anyReal };
+  }
+
+  function renderAim(res) {
+    const box = $('s-aim');
+    if (!box) return;
+    const aim = AIMS[d().aim] ? d().aim : 'balance';
+    const info = AIMS[aim];
+    const head = `<h2>狙い別のおすすめ</h2>
+      <div class="aim-tabs">${Object.entries(AIMS).map(([k, a]) => `<button data-aim="${k}" class="${k === aim ? 'on' : ''}"><span>${a.icon}</span>${a.label}</button>`).join('')}</div>
+      <p class="aim-desc">${info.desc}</p>`;
+    if (!res) { box.innerHTML = head + '<p class="hint">出走馬を取得すると、狙いに合った買い目を出します。</p>'; return; }
+    const { list, anyReal } = aimCandidates(res, aim);
+    const n = d().horses.length;
+    const hinfo = d().horseInfo || {};
+    const unit = Number(d().aimUnit) || 100;
+    const minEv = d().minev / 100;
+    const hitP = list.reduce((a, c) => a + c.p, 0);
+    const ret = list.reduce((a, c) => a + c.p * c.odds * unit, 0);
+    const cost = list.length * unit;
+    const good = list.filter((c) => c.ev >= minEv).length;
+    const rows = list.map((c, i) => {
+      const badges = c.nos.map((no) => wakuBadge((hinfo[no] || {}).waku || wakuOf(no, n), no)).join(c.ordered ? '<span class="arrow">→</span>' : '');
+      return `<div class="aim-row ${c.real && c.ev >= minEv ? 'buy' : ''}">
+        <span class="aim-type">${COMBO_TO_BET[c.type]}</span><span class="combo">${badges}</span>
+        <span class="aim-odds">${c.real ? '' : '<small>推定</small>'}${c.odds >= 100 ? Math.round(c.odds) : c.odds.toFixed(1)}倍</span>
+        <span class="aim-p">${pct(c.p, c.p < 0.01 ? 2 : 1)}</span>
+        <span class="aim-ev">${c.real ? evBadge(c.ev) : ''}</span>
+        <button class="btn small" data-act="rec1" data-i="${i}">記録</button></div>`;
+    }).join('');
+    box.innerHTML = head + (list.length ? `
+      <div class="aim-kpi">
+        <div><b>${list.length}</b>点</div>
+        <div>的中率<b>${pct(Math.min(hitP, 1), hitP < 0.05 ? 1 : 0)}</b></div>
+        <div>期待回収<b>${cost ? Math.round((ret / cost) * 100) : 0}%</b></div>
+      </div>
+      <div class="aim-list">${rows}</div>
+      <div class="aim-foot">
+        <label>1点 <input type="number" id="aim-unit" class="plain" min="100" step="100" value="${unit}">円</label>
+        <span>計 <b>${yen(cost)}</b></span>
+        <button class="btn small primary" data-act="recall">まとめて記録</button>
+      </div>
+      <p class="hint">${anyReal ? `実オッズで期待値の高い順。期待値${minEv.toFixed(2)}以上は${good}点${good ? '' : '（<b>見送りも検討</b>）'}` : '実オッズ取得前のため、推定的中率の高い順・オッズは推定です（取得すると期待値順に入れ替わります）'}</p>`
+      : '<p class="hint">この狙いに合う買い目がありません（出走頭数が少ない・人気が偏っている等）。</p>') +
+      (info.min >= 100 ? '<p class="hint">高配当の帯は的中率の推定誤差が大きく、期待値が高く出やすい点に注意（実績の回収率を目安に、少額で）。</p>' : '') +
+      `<p class="aim-record">📊 ${info.record}</p>`;
+    box._list = list;
+  }
+
+  function recordAim(list, unit) {
+    list.forEach((c) => {
+      const type = COMBO_TO_BET[c.type];
+      state.bets.push({
+        id: uid(), createdAt: Date.now(), date: d().date || today(), venue: d().venue || '', race: d().race ? Number(d().race) : '',
+        name: d().name || '', raceId: d().raceId || '', type, mode: 'normal', picks: c.nos.slice(), combos: [c.nos.slice()],
+        points: 1, unit, stake: unit, sel: c.nos.join(c.ordered ? '→' : '-'), payout: null,
+        conf: '', ev: c.real ? Number(c.ev.toFixed(2)) : '', memo: `狙い: ${AIMS[d().aim || 'balance'].label}`,
+      });
+    });
+    save(); renderLog();
+    toast(`${list.length}点（計${yen(list.length * unit)}）を記録しました`);
   }
 
   // ---------- 予想のまとめ（サイド） ----------
@@ -983,7 +1104,7 @@
       $('f-fetch').addEventListener('click', () => win(true));
       $('f-auto').addEventListener('change', (e) => {
         clearInterval(timer);
-        if (e.target.checked) timer = setInterval(() => { win(false).then(() => combos(false)); }, 60000);
+        if (e.target.checked) timer = setInterval(() => { win(false).then(() => { combos(false); AIMS[d().aim || 'balance'].types.forEach((t) => combos(false, t)); }); }, 60000);
       });
       listRaces();
     }
@@ -1028,20 +1149,20 @@
         $('p-venue').value = r.venue; $('p-race').value = r.race; $('p-name').value = d().name; $('p-date').value = d().date;
         save(); renderHorses();
         status(`単勝 ${r.updated || ''} 時点${scratched.length ? ` / 取消・オッズなし: ${scratched.join(',')}番` : ''}`, 'ok');
-        if (manual) { combos(true); horses().then(() => trend()); }
+        if (manual) { combos(true); (AIMS[d().aim || 'balance'].types).forEach((t) => t !== d().comboType && combos(true, t)); horses().then(() => trend()); }
       } catch (e) { status('取得失敗: ' + e.message, 'err'); }
     }
 
-    async function combos(force) {
+    async function combos(force, typeArg) {
       const rid = d().raceId;
       if (!rid || location.protocol === 'file:') return;
-      const type = d().comboType;
+      const type = typeArg || d().comboType;
       if (!force && d().comboOdds[type] && d().comboOdds[type].__rid === rid && Date.now() - d().comboOdds[type].__at < 60000) return;
       try {
         const r = await api(`/api/odds?race_id=${rid}&type=${type}`);
         d().comboOdds[type] = { ...r.odds, __rid: rid, __at: Date.now() };
         save();
-        if (d().comboType === type) renderAnalysis();
+        if (d().comboType === type || (AIMS[d().aim] || {}).types?.includes(type)) renderAnalysis();
       } catch (e) { status(`${COMBO_TO_BET[type]}オッズの取得失敗: ${e.message}`, 'err'); }
     }
     async function horses() {
