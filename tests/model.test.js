@@ -18,6 +18,12 @@ test('Harville: 各券種の確率合計が整合', () => {
   close(sum(h.wide), 3);                       // 1レースでワイドは3組的中
   close(h.place.reduce((a, b) => a + b, 0), 3); // 複勝3頭
 });
+test('補正Harville: 人気馬どうしの組み合わせを元のHarvilleより低く見る', () => {
+  const p = [0.4, 0.25, 0.15, 0.1, 0.05, 0.05];
+  const a = M.harville(p, { second: 1, third: 1 }), b = M.harville(p);
+  assert.ok(b.trio.get('0-1-2') < a.trio.get('0-1-2'));
+  close(sum(b.trio), 1);
+});
 test('7頭以下は複勝2着まで', () => {
   const h = M.harville(M.scoreProbs([60, 50, 50, 50, 40, 40], 10));
   close(h.place.reduce((a, b) => a + b, 0), 2);

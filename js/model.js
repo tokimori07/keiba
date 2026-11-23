@@ -50,12 +50,26 @@
     return raw.map((v) => v / sum);
   }
 
+  // 2着・3着の確率は勝率をそのまま使うと人気馬に偏りすぎる（1年分の検証で人気サイドの3連複を約3割過大評価）。
+  // 2着は p^0.9、3着は p^0.8 に弱めて計算する（補正Harville。1年分の実績で最もよく当てはまった値）
+  const PLACE_DISCOUNT = { second: 0.9, third: 0.8 };
+
+  function powNorm(p, k) {
+    const raw = p.map((v) => (v > 0 ? Math.pow(v, k) : 0));
+    const s = raw.reduce((a, b) => a + b, 0);
+    return raw.map((v) => (s > 0 ? v / s : 0));
+  }
+
   /**
-   * Harvilleモデルで全着順(1-2-3着)の確率を列挙し、各券種の確率を集計
+   * 補正Harvilleモデルで全着順(1-2-3着)の確率を列挙し、各券種の確率を集計
    * @param {number[]} p 各馬の勝率
+   * @param {{second:number, third:number}} [disc] 2着・3着の弱め方（1,1で元のHarville）
    * @returns {{place:number[], exacta:Map, quinella:Map, wide:Map, trifecta:Map, trio:Map}}
    */
-  function harville(p) {
+  function harville(p, disc) {
+    const d = disc || PLACE_DISCOUNT;
+    const p2 = powNorm(p, d.second);
+    const p3 = powNorm(p, d.third);
     const n = p.length;
     const placeSlots = n <= 4 ? 1 : n <= 7 ? 2 : 3; // JRA複勝: 4頭以下なし(便宜上1着),5-7頭は2着まで
     const place = new Array(n).fill(0);
@@ -73,7 +87,7 @@
       if (p[i] <= 0) continue;
       for (let j = 0; j < n; j++) {
         if (j === i || p[j] <= 0) continue;
-        const pij = p[i] * (p[j] / (1 - p[i]));
+        const pij = p[i] * (p2[j] / (1 - p2[i]));
         add(exacta, key([i, j]), pij);
         add(quinella, key(sorted([i, j])), pij);
         top2[i] += pij;
@@ -81,7 +95,7 @@
         if (n < 3) continue;
         for (let k = 0; k < n; k++) {
           if (k === i || k === j || p[k] <= 0) continue;
-          const pijk = pij * (p[k] / (1 - p[i] - p[j]));
+          const pijk = pij * (p3[k] / (1 - p3[i] - p3[j]));
           add(trifecta, key([i, j, k]), pijk);
           add(trio, key(sorted([i, j, k])), pijk);
           add(wide, key(sorted([i, j])), pijk);
@@ -163,7 +177,7 @@
     return { rows, combos, overround: overround(odds), comboNames: types };
   }
 
-  const api = { marketProbs, overround, scoreProbs, softmaxRaw, blend, harville, kelly, roundBet, analyze };
+  const api = { PLACE_DISCOUNT, marketProbs, overround, scoreProbs, softmaxRaw, blend, harville, kelly, roundBet, analyze };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.KeibaModel = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -39,7 +39,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.23-a"
+APP_VERSION = "2026.11.23-b"
 MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
