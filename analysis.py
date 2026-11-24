@@ -91,6 +91,9 @@ def parse_past5(html):
         name = re.search(r'class="Horse02">\s*<a[^>]*>(.*?)</a>', row, re.S)
         style = re.search(r'class="kyakusitu">(.*?)<', row)
         jk = re.search(r'<td class="Jockey">.*?/jockey/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
+        sire = re.search(r'class="Horse01[^"]*">(.*?)</div>', row, re.S)
+        bms = re.search(r'class="Horse04">\((.*?)\)</div>', row, re.S)
+        kin = re.search(r'<td class="Jockey">.*?</a>\s*<br\s*/?>\s*<span>([\d.]+)</span>', row, re.S)
         tr = re.search(r'class="Horse05">\s*<a[^>]*/trainer/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
         bw = re.search(r'class="Weight[^"]*">\s*(\d{3})kg(?:<span>\(([-+]?\d+)\)</span>)?', row)
         runs = []
@@ -105,6 +108,9 @@ def parse_past5(html):
             "style": strip_tags(style.group(1)) if style else "",
             "jockeyId": jk.group(1) if jk else "",
             "jockey": strip_tags(jk.group(2)) if jk else "",
+            "sire": strip_tags(sire.group(1)) if sire else "",
+            "bms": strip_tags(bms.group(1)) if bms else "",
+            "kinryo": float(kin.group(1)) if kin else None,
             "trainerId": tr.group(1) if tr else "",
             "trainer": strip_tags(tr.group(2)) if tr else "",
             "bodyWeight": int(bw.group(1)) if bw else None,
@@ -138,6 +144,8 @@ def parse_past_cell(cell, race_id=""):
     d3 = strip_tags((re.search(r'class="Data03">(.*?)</div>', cell, re.S) or [None, ""])[1])
     field = re.search(r"(\d+)頭", d3)
     pop = re.search(r"(\d+)人", d3)
+    gate = re.search(r"(\d+)番", d3)
+    jk_kin = re.search(r"人\s+(\S+)\s+([\d.]+)\s*$", d3)
     d6 = strip_tags((re.search(r'class="Data06">(.*?)</div>', cell, re.S) or [None, ""])[1])
     passing = re.match(r"([\d-]+)", d6)
     last3f = re.search(r"\((\d+\.\d)\)", d6)
@@ -166,6 +174,9 @@ def parse_past_cell(cell, race_id=""):
         "cond": cond.group(1) if cond else "",
         "firstCorner": first_corner,
         "bodyWeight": int(bw.group(1)) if bw else None,
+        "gate": int(gate.group(1)) if gate else None,
+        "jockeyName": jk_kin.group(1) if jk_kin else "",
+        "kinryo": float(jk_kin.group(2)) if jk_kin else None,
     }
 
 
