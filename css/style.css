@@ -395,3 +395,31 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
 .upd { margin-left: 10px; border: 0; border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 700;
   background: var(--gold); color: #3a2a00; cursor: pointer; white-space: nowrap; }
 .upd:disabled { opacity: .7; cursor: default; }
+
+/* ---- オッズの動き・CLV ---- */
+.move { display: inline-block; margin-left: 4px; font-size: 10px; font-weight: 700; padding: 0 4px; border-radius: 6px; vertical-align: middle; }
+.move.down { color: #fff; background: var(--hot); }
+.move.up { color: var(--muted); background: var(--surface-2); }
+.clv { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.clv.good { color: var(--pos); font-weight: 700; }
+.clv.bad { color: var(--neg); }
+.kpis.small { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 8px; }
+
+/* ---- 振り返り ---- */
+.card.flat { box-shadow: none; background: var(--surface-2); }
+.card h3, #tab-review h3 { font-size: 14px; margin: 4px 0 8px; }
+.rv-list { display: grid; gap: 6px; }
+.rv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: center;
+  border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; background: var(--surface); }
+.rv-row .rv-race { grid-column: 1; }
+.rv-row > button { grid-column: 2; grid-row: 1; }
+.rv-cols { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; font-size: 13px; }
+.rv-cols > div > small:first-child { display: block; font-size: 10px; color: var(--muted); }
+.rv-cols small { display: block; font-size: 11px; color: var(--muted); }
+.rv-h.win { color: var(--hot); font-weight: 700; }
+.rv-h.plc { color: var(--pos); font-weight: 600; }
+.rv-row .hint { grid-column: 1 / -1; margin: 0; }
+@media (max-width: 760px) { .rv-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.card.flat { overflow-x: auto; }
+.grade-chip { display: inline-block; font-size: 10px; font-weight: 700; color: #fff; border-radius: 5px; padding: 1px 5px; margin-right: 4px; background: var(--muted); }
+.grade-chip.g1 { background: var(--g1); } .grade-chip.g2 { background: var(--g2); } .grade-chip.g3 { background: var(--g3); }

@@ -32,6 +32,7 @@ import webbrowser
 import gzip
 import hashlib
 from datetime import date as _date
+from datetime import datetime as _datetime
 
 import analysis as A
 import backtest as B
@@ -39,7 +40,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.24-a"
+APP_VERSION = "2026.11.24-b"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -223,6 +224,19 @@ class NetkeibaProvider:
             results.append({**r, "result": A.parse_result(html)})
         return {**info, "mode": found["mode"], "trend": A.aggregate_trend(results)}
 
+    # ---- 確定オッズ（レース後。確定したら保存して二度と取りに行かない）----
+    def final_odds(self, race_id, kind):
+        base = os.path.join(self.CACHE_DIR, hashlib.sha1(f"final-odds:{race_id}:{kind}".encode()).hexdigest())
+        cached = read_cache(base)
+        if cached:
+            return json.loads(cached)
+        r = self.odds(race_id, kind)
+        if r.get("status") == "result":
+            os.makedirs(self.CACHE_DIR, exist_ok=True)
+            with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as f:
+                f.write(json.dumps(r, ensure_ascii=False))
+        return r
+
     # ---- オッズ ----
     def odds(self, race_id, kind):
         info = parse_race_id(race_id)
@@ -305,6 +319,74 @@ class Updater:
 
 def restart():
     os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+class OddsLog:
+    """単勝オッズの推移を記録する（.cache/oddslog/<race_id>.json）。締切前のオッズの動きの検証用"""
+
+    def __init__(self, root):
+        self.dir = os.path.join(root, ".cache", "oddslog")
+        self.lock = threading.Lock()
+
+    def _path(self, race_id):
+        return os.path.join(self.dir, re.sub(r"\D", "", race_id) + ".json")
+
+    def get(self, race_id):
+        try:
+            with open(self._path(race_id), encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return []
+
+    def add(self, race_id, horses, status=""):
+        odds = {str(h["no"]): h["odds"] for h in horses if h.get("odds")}
+        if not odds or not re.fullmatch(r"\d{12}", race_id or ""):
+            return
+        with self.lock:
+            log = self.get(race_id)
+            if log and log[-1].get("final"):
+                return  # 確定後は記録しない
+            now = int(time.time())
+            final = status == "result"
+            if log and log[-1]["o"] == odds and now - log[-1]["t"] < 600 and not final:
+                return  # 変化がなければ10分に1回だけ
+            log.append({"t": now, "o": odds, **({"final": True} if final else {})})
+            os.makedirs(self.dir, exist_ok=True)
+            with open(self._path(race_id), "w", encoding="utf-8") as f:
+                json.dump(log, f)
+
+
+class OddsRecorder(threading.Thread):
+    """開催日の9時〜17時、その日の重賞の単勝オッズを3分ごとに記録する（画面を開いていなくても）"""
+    INTERVAL = 180
+
+    def __init__(self, provider, log):
+        super().__init__(daemon=True)
+        self.provider, self.log = provider, log
+
+    def tick(self, now=None):
+        now = now or _datetime.now()
+        if not (9 <= now.hour < 17):
+            return 0
+        n = 0
+        for r in self.provider.races(now.strftime("%Y%m%d")):
+            if r.get("grade") not in ("G1", "G2", "G3"):
+                continue
+            try:
+                res = self.provider.odds(r["race_id"], "win")
+                self.log.add(r["race_id"], res.get("horses", []), res.get("status", ""))
+                n += 1
+            except Exception:
+                continue
+        return n
+
+    def run(self):
+        while True:
+            try:
+                self.tick()
+            except Exception:
+                pass
+            time.sleep(self.INTERVAL)
 
 
 def add_jockeys(report, past, stats):
@@ -449,6 +531,9 @@ def combos_from_payload(payload, kind, type_no):
 # モック（動作確認・デモ用）
 # ---------------------------------------------------------------------------
 class MockProvider:
+    def final_odds(self, race_id, kind):
+        return {**self.odds(race_id, kind), "status": "result"}
+
     JOCKEYS = ["北川", "南野", "東田", "西山", "中島", "上原", "下村", "森", "林", "川口", "岡", "谷"]
     NAMES = ["アオゾラ", "ハヤテ", "ミカヅキ", "シロガネ", "ツバクロ", "ホシアカリ", "カザグルマ", "ユキノハナ",
              "イナズマ", "コハク", "サクラビト", "トキノカネ", "ナミノリ", "ヒバリ", "モミジガリ", "ワカバ"]
@@ -658,9 +743,13 @@ class BacktestJob:
         return self.state
 
 
+ODDS_LOG = OddsLog(ROOT)
+
+
 def make_handler(provider):
     job = BacktestJob(provider)
     updater = Updater()
+    oddslog = ODDS_LOG
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -750,7 +839,17 @@ def make_handler(provider):
                     kind = q.get("type", "win")
                     if kind != "win" and kind not in COMBO_TYPES:
                         return self._json(400, {"error": "type が不正です"})
-                    return self._json(200, provider.odds(q.get("race_id", ""), kind))
+                    res = provider.odds(q.get("race_id", ""), kind)
+                    if kind == "win":
+                        oddslog.add(q.get("race_id", ""), res.get("horses", []), res.get("status", ""))
+                    return self._json(200, res)
+                if url.path == "/api/finalodds":
+                    kind = q.get("type", "win")
+                    if kind != "win" and kind not in COMBO_TYPES:
+                        return self._json(400, {"error": "type が不正です"})
+                    return self._json(200, provider.final_odds(q.get("race_id", ""), kind))
+                if url.path == "/api/oddslog":
+                    return self._json(200, {"log": oddslog.get(q.get("race_id", ""))})
                 return self._json(404, {"error": "not found"})
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
@@ -780,6 +879,8 @@ def main():
     url = f"http://localhost:{args.port}"
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(provider))
+        if not args.mock:
+            OddsRecorder(provider, ODDS_LOG).start()
     except OSError:
         # 既に競馬ノートが動いていれば、それを開くだけにする
         # （ポートが変わると保存データが見えなくなるため、別ポートでは起動しない）

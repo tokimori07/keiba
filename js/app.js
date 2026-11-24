@@ -3,6 +3,7 @@
   'use strict';
   const M = window.KeibaModel;
   const S = window.KeibaStats;
+  const RV = window.KeibaReview;
 
   const VENUES = ['東京', '中山', '京都', '阪神', '中京', '新潟', '福島', '小倉', '札幌', '函館', '地方', '海外'];
   const BET_TYPES = ['単勝', '複勝', '枠連', '馬連', 'ワイド', '馬単', '3連複', '3連単', 'WIN5'];
@@ -13,6 +14,7 @@
   // ---------- 状態 ----------
   const defaultState = () => ({
     bets: [],
+    preds: {},  // 予想の振り返り用（raceId → 予想時の印・推定勝率・オッズ と結果）
     settings: { bankroll: 100000, kelly: 0.25, cap: 10000 },
     draft: {
       date: today(), venue: '東京', race: 11, name: '',
@@ -68,6 +70,7 @@
       document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
       if (btn.dataset.tab === 'stats') renderStats();
       if (btn.dataset.tab === 'log') { renderLog(); autoSettle(true); }
+      if (btn.dataset.tab === 'review') { renderReview(); settlePreds(true); }
     });
   });
 
@@ -166,14 +169,14 @@
       } else if (btn.dataset.act === 'del') {
         d().horses.splice(i, 1); save(); renderHorses();
       } else if (btn.dataset.act === 'rec') {
-        prefillBet({ type: '単勝', sel: tr.dataset.no, ev: Number(tr.dataset.ev), stake: Number(tr.dataset.bet) || '' });
+        prefillBet({ type: '単勝', sel: tr.dataset.no, ev: Number(tr.dataset.ev), stake: Number(tr.dataset.bet) || '', odds: Number(tr.dataset.odds) });
       } else if (btn.dataset.act === 'more') {
         tr.nextElementSibling.classList.toggle('hidden');
       }
     });
     $('s-summary').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-act=rec]'); if (!btn) return;
-      prefillBet({ type: btn.dataset.type, sel: btn.dataset.sel, ev: Number(btn.dataset.ev), stake: Number(btn.dataset.bet) || '' });
+      prefillBet({ type: btn.dataset.type, sel: btn.dataset.sel, ev: Number(btn.dataset.ev), stake: Number(btn.dataset.bet) || '', odds: Number(btn.dataset.odds) });
     });
 
     $('s-aim').addEventListener('click', (e) => {
@@ -184,7 +187,7 @@
         AIMS[d().aim].types.forEach((type) => Fetch.combos(false, type));
       } else if (t.dataset.act === 'rec1') {
         const c = box._list[Number(t.dataset.i)];
-        prefillBet({ type: COMBO_TO_BET[c.type], sel: c.nos.join(c.ordered ? '→' : '-'), ev: c.real ? c.ev : '', stake: Number(d().aimUnit) || 100 });
+        prefillBet({ type: COMBO_TO_BET[c.type], sel: c.nos.join(c.ordered ? '→' : '-'), ev: c.real ? c.ev : '', stake: Number(d().aimUnit) || 100, odds: c.real ? c.odds : '' });
       } else if (t.dataset.act === 'recall') {
         if (!box._list || !box._list.length) return;
         if (!d().raceId && !d().name) { toast('先にレースを選んでください'); return; }
@@ -221,7 +224,7 @@
       const tr = e.target.closest('tr');
       const o = Number(tr.querySelector('input').value);
       const p = Number(tr.dataset.p);
-      prefillBet({ type: COMBO_TO_BET[d().comboType], sel: tr.dataset.sel, ev: o > 0 ? p * o : '' });
+      prefillBet({ type: COMBO_TO_BET[d().comboType], sel: tr.dataset.sel, ev: o > 0 ? p * o : '', odds: o > 0 ? o : '' });
     });
     renderHorses();
     renderBanner();
@@ -350,6 +353,7 @@
         learned: learned ? { betaMarket: d().modelInfo.betaMarket } : null })
       : null;
     const byNo = res ? Object.fromEntries(res.rows.map((r) => [r.no, r])) : {};
+    if (res) savePrediction(res, learned);
     $('p-overround').textContent = res ? `控除率 ${pct(res.overround, 0)}` : '';
 
     // ---- 出馬表 ----
@@ -369,7 +373,7 @@
         <td>${esc(run.surface)}${run.distance || ''}</td><td class="num"><b>${run.place ?? '中止'}</b>着/${run.field || '-'}頭</td>
         <td class="num">${run.pop ?? '-'}人気</td><td class="num">${run.margin != null ? run.margin.toFixed(1) + '秒' : ''}</td><td>${esc(run.style || '')}</td></tr>`).join('');
       return `
-      <tr data-i="${i}" data-no="${esc(h.no)}" data-ev="${r ? r.ev.toFixed(2) : ''}" data-bet="${buy ? bet : 0}" class="horse ${buy ? 'buy' : ''}">
+      <tr data-i="${i}" data-no="${esc(h.no)}" data-odds="${r ? r.odds : ''}" data-ev="${r ? r.ev.toFixed(2) : ''}" data-bet="${buy ? bet : 0}" class="horse ${buy ? 'buy' : ''}">
         <td class="c-ban">${edit ? `<input class="plain w-no" type="number" data-f="no" value="${esc(h.no)}" />` : wakuBadge(w, h.no)}
           ${wakuClass(w) ? `<span class="waku-tip ${wakuClass(w)}" title="過去10年でこの枠は${wakuClass(w) === 'good' ? '好成績' : '不振'}">${wakuClass(w) === 'good' ? '◎枠' : '△枠'}</span>` : ''}</td>
         <td class="c-name">
@@ -380,7 +384,7 @@
         </td>
         <td class="c-abil">${x.rating !== undefined ? starsHtml(x.stars, true) + (x.rating ? `<div class="rating">指数 ${x.rating}</div>` : '') : '<span class="hint">-</span>'}</td>
         <td class="num c-odds">${edit ? `<input class="plain w-odds" type="number" step="0.1" data-f="odds" value="${esc(h.odds)}" />`
-          : `<div class="odds">${r ? r.odds.toFixed(1) : '-'}</div><div class="pop">${pops[h.no] ? pops[h.no] + '番人気' : ''}</div>`}</td>
+          : `<div class="odds">${r ? r.odds.toFixed(1) : '-'}${moveHtml(h.no, r)}</div><div class="pop">${pops[h.no] ? pops[h.no] + '番人気' : ''}</div>`}</td>
         <td class="c-prob">${r ? `<div class="pbar" title="オッズ ${pct(r.pMarket)} / 予想 ${pct(r.p)}">
             <span class="me" style="width:${(r.p / maxP) * 100}%"></span><i class="mkt" style="left:${(r.pMarket / maxP) * 100}%"></i></div>
             <div class="pval"><b>${pct(r.p)}</b> <span class="${r.p > r.pMarket * 1.15 ? 'up' : r.p < r.pMarket * 0.85 ? 'down' : ''}">${r.p > r.pMarket * 1.15 ? '▲' : r.p < r.pMarket * 0.85 ? '▼' : ''}</span></div>` : ''}</td>
@@ -518,11 +522,177 @@
         id: uid(), createdAt: Date.now(), date: d().date || today(), venue: d().venue || '', race: d().race ? Number(d().race) : '',
         name: d().name || '', raceId: d().raceId || '', type, mode: 'normal', picks: c.nos.slice(), combos: [c.nos.slice()],
         points: 1, unit, stake: unit, sel: c.nos.join(c.ordered ? '→' : '-'), payout: null,
-        conf: '', ev: c.real ? Number(c.ev.toFixed(2)) : '', memo: `狙い: ${AIMS[d().aim || 'balance'].label}`,
+        conf: '', ev: c.real ? Number(c.ev.toFixed(2)) : '', oddsAtBet: c.real ? c.odds : '', memo: `狙い: ${AIMS[d().aim || 'balance'].label}`,
       });
     });
     save(); renderLog();
     toast(`${list.length}点（計${yen(list.length * unit)}）を記録しました`);
+  }
+
+  // ---------- 予想の保存（振り返り用）----------
+  function savePrediction(res, learned) {
+    const rid = d().raceId;
+    if (!rid || res.rows.length < 3) return;
+    const old = state.preds[rid];
+    if (old && old.result) return;  // 結果が出た後は書き換えない
+    if (!old && d().oddsStatus === 'result') return;  // レース後に初めて開いたものは「予想」として保存しない
+    const markOf = (no) => {
+      const h = d().horses.find((x) => Number(x.no) === Number(no));
+      const m = h && MARKS.find(([, v]) => Number(h.score) === v);
+      return m ? m[0] : '';
+    };
+    state.preds[rid] = {
+      raceId: rid, date: d().date, venue: d().venue, race: d().race, name: d().name, grade: (d().raceMeta || {}).grade || '',
+      at: Date.now(), method: learned ? 'learned' : 'manual', aim: d().aim || '',
+      horses: res.rows.map((r) => ({ no: r.no, name: r.name, odds: r.odds, pm: +r.pMarket.toFixed(4), p: +r.p.toFixed(4), mark: markOf(r.no) })),
+    };
+    clearTimeout(savePrediction.t);
+    savePrediction.t = setTimeout(save, 500);
+  }
+
+  // ---------- 締切前のオッズの動き ----------
+  function moveHtml(no, r) {
+    const lg = d().oddsLog;
+    if (!r || !lg || lg.raceId !== d().raceId || lg.log.length < 2) return '';
+    const first = Number(lg.log[0].o[String(no)]);
+    if (!(first > 1)) return '';
+    const ch = r.odds / first - 1;
+    if (Math.abs(ch) < 0.1) return '';
+    const t = new Date(lg.log[0].t * 1000);
+    const hm = `${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`;
+    return `<span class="move ${ch < 0 ? 'down' : 'up'}" title="${hm}の ${first.toFixed(1)}倍 から">${ch < 0 ? '▼' : '▲'}${Math.abs(Math.round(ch * 100))}%</span>`;
+  }
+
+  // ---------- 買った時点と最終のオッズ（CLV）----------
+  function clvHtml(b) {
+    if (!(b.oddsAtBet > 1)) return '';
+    if (!(b.oddsFinal > 1)) return `<span class="clv" title="購入時のオッズ">${b.oddsAtBet}倍</span> `;
+    const good = b.oddsFinal < b.oddsAtBet;
+    return `<span class="clv ${good ? 'good' : b.oddsFinal > b.oddsAtBet ? 'bad' : ''}" title="購入時 → 最終オッズ">${b.oddsAtBet}→${b.oddsFinal}倍</span> `;
+  }
+
+  async function fillFinalOdds() {
+    if (!online()) return;
+    const need = state.bets.filter((b) => b.oddsAtBet > 1 && !b.oddsFinal && b.raceId && S.isSettled(b) && RV.KIND[b.type] && b.combos && b.combos.length === 1);
+    const cache = {};
+    for (const b of need) {
+      const kind = RV.KIND[b.type];
+      const k = `${b.raceId}|${kind}`;
+      try {
+        if (!(k in cache)) cache[k] = await apiGet(`/api/finalodds?race_id=${b.raceId}&type=${kind}`);
+        if (cache[k].status !== 'result') continue;
+        const o = RV.finalOddsOf(b, cache[k]);
+        if (o > 1) b.oddsFinal = o;
+      } catch (e) { /* 取れなければ次回 */ }
+    }
+  }
+
+  function renderClv(bets) {
+    const box = $('s-clv');
+    if (!box) return;
+    const c = RV.clv(bets);
+    if (!c.n) {
+      box.innerHTML = '<p class="hint">予想タブから記録した馬券（1点買い）は、購入時のオッズが自動で入ります。レース後に最終オッズと比べ、ここに集計します。</p>';
+      return;
+    }
+    const verdict = c.avg > 0.03 ? ['pos', '良い値で買えています（買った後に他の人も同じ馬券を買っている）'] : c.avg < -0.03 ? ['neg', '買った後にオッズが上がりがち。人気の盛り上がりに乗って買っている可能性'] : ['', '市場と同じくらい。続けて様子を見ましょう'];
+    box.innerHTML = `<div class="kpis small">
+        <div class="kpi"><div class="label">平均CLV</div><div class="value ${verdict[0]}">${c.avg >= 0 ? '+' : ''}${pct(c.avg)}</div><div class="sub">購入時÷最終オッズ − 1</div></div>
+        <div class="kpi"><div class="label">オッズが下がった割合</div><div class="value">${pct(c.downRate, 0)}</div><div class="sub">${c.n}件中</div></div>
+      </div>
+      <p class="hint"><b class="${verdict[0]}">${verdict[1]}</b>。回収率は運に大きく左右されますが、CLVは数十件で傾向が見え、長期的な回収率と強く関係します。</p>
+      <table class="tbl"><thead><tr><th>券種</th><th class="num">件数</th><th class="num">平均CLV</th><th class="num">下がった割合</th></tr></thead><tbody>
+      ${c.byType.map((t) => `<tr><td>${esc(t.type)}</td><td class="num">${t.n}</td><td class="num ${signCls(t.avg)}">${t.avg >= 0 ? '+' : ''}${pct(t.avg)}</td><td class="num">${pct(t.downRate, 0)}</td></tr>`).join('')}
+      </tbody></table>`;
+  }
+
+  // ---------- 振り返り ----------
+  async function settlePreds(quiet) {
+    if (!online()) return;
+    const pending = Object.values(state.preds).filter((p) => !p.result && p.date && p.date <= today());
+    let done = 0;
+    for (const p of pending) {
+      try {
+        const r = await apiGet(`/api/payout?race_id=${p.raceId}`);
+        if (!r.final) continue;
+        p.result = RV.resultFromPayouts(r.payouts);
+        try {
+          const fin = await apiGet(`/api/finalodds?race_id=${p.raceId}&type=win`);
+          if (fin.status === 'result') p.final = Object.fromEntries((fin.horses || []).filter((h) => h.odds).map((h) => [h.no, h.odds]));
+        } catch (e) { /* 最終オッズなしでも集計はできる */ }
+        try {
+          const lg = (await apiGet(`/api/oddslog?race_id=${p.raceId}`)).log || [];
+          if (lg.length >= 2) { p.first = Object.fromEntries(Object.entries(lg[0].o).map(([k, v]) => [Number(k), v])); p.firstAt = lg[0].t; }
+        } catch (e) { /* 記録がないレース */ }
+        done++;
+      } catch (e) { /* 次回 */ }
+    }
+    if (done) { save(); renderReview(); }
+    if (!quiet) toast(done ? `${done}レースの結果を反映しました` : 'まだ結果が確定したレースはありません');
+  }
+
+  function renderReview() {
+    const box = $('rv-body');
+    if (!box) return;
+    const preds = Object.values(state.preds).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.raceId || '').localeCompare(a.raceId || ''));
+    const pending = preds.filter((p) => !p.result).length;
+    $('rv-settle').textContent = pending ? `結果を反映（${pending}レース）` : '結果を反映';
+    const a = RV.analyze(preds);
+    if (!preds.length) {
+      box.innerHTML = '<p class="empty">予想タブで重賞を取得すると、その時点の印・推定勝率・オッズが自動で保存され、レース後にここで答え合わせができます。</p>';
+      return;
+    }
+    const cell = (g) => g.n ? `<td class="num">${g.n}</td><td class="num">${pct(g.winRate, 0)}</td><td class="num">${pct(g.top3Rate, 0)}</td>
+      <td class="num ${g.winRoi >= 1 ? 'pos' : ''}">${pct(g.winRoi, 0)}</td><td class="num ${g.placeRoi >= 1 ? 'pos' : ''}">${pct(g.placeRoi, 0)}</td>`
+      : '<td class="num">0</td>' + '<td class="num hint">-</td>'.repeat(4);
+    const head = '<thead><tr><th></th><th class="num">頭数</th><th class="num">勝率</th><th class="num">3着内率</th><th class="num">単勝回収率</th><th class="num">複勝回収率</th></tr></thead>';
+    const kpi = (label, g, sub) => `<div class="kpi"><div class="label">${label}</div><div class="value">${g.n ? pct(g.winRate, 0) : '-'}</div><div class="sub">${g.n ? `3着内 ${pct(g.top3Rate, 0)}・単回収 ${pct(g.winRoi, 0)}` : sub}</div></div>`;
+    const pop = (p) => RV.popularity(p);
+    const place = (p, no) => { const i = p.result.order.indexOf(no); return i >= 0 ? `${i + 1}着` : p.result.top3.includes(no) ? '3着内' : '着外'; };
+    const horseCell = (p, h) => {
+      if (!h) return '<span class="hint">-</span>';
+      const pl = place(p, h.no);
+      return `<span class="rv-h ${pl === '1着' ? 'win' : pl !== '着外' ? 'plc' : ''}">${esc(h.no)} ${esc(h.name || '')}<small>${pop(p)[h.no] || '-'}人気・${pl}</small></span>`;
+    };
+    box.innerHTML = `
+      <div class="kpis">
+        ${kpi('自分の◎', a.marks['◎'], '印を付けると集計')}
+        ${kpi('モデルの本命', a.model, '')}
+        ${kpi('1番人気', a.fav, '')}
+        <div class="kpi"><div class="label">答え合わせ済み</div><div class="value">${a.races}</div><div class="sub">うち印あり ${a.marked}・オッズ推移あり ${a.moved}</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card flat"><h3>印別の成績</h3><table class="tbl">${head}<tbody>
+          ${RV.MARK_ORDER.map((m) => `<tr><td><b>${m}</b></td>${cell(a.marks[m])}</tr>`).join('')}
+        </tbody></table>
+        <p class="hint">◎の単勝回収率が1番人気より高ければ、自分の目がオッズに勝っています。</p></div>
+        <div class="card flat"><h3>オッズとのずれ</h3><table class="tbl">${head}<tbody>
+          <tr><td>人気薄（4番人気以下）の◎</td>${cell(a.honmeiAna)}</tr>
+          <tr><td>モデルが▲（オッズより強い）</td>${cell(a.modelUp)}</tr>
+          <tr><td>モデルが▼（オッズより弱い）</td>${cell(a.modelDown)}</tr>
+        </tbody></table>
+        <p class="hint">「ずれ」で回収率100%超えが続く場面が、あなたの得意パターンです。</p></div>
+        <div class="card flat span-2"><h3>締切前のオッズの動き（記録開始時 → 最終）</h3><table class="tbl">${head}<tbody>
+          <tr><td>大きく売れた（30%以上下がった）</td>${cell(a.moveDown)}</tr>
+          <tr><td>あまり動かない</td>${cell(a.moveFlat)}</tr>
+          <tr><td>売れなかった（30%以上上がった）</td>${cell(a.moveUp)}</tr>
+        </tbody></table>
+        <p class="hint">アプリが起動していれば、開催日の9〜17時に重賞の単勝オッズを3分ごとに自動で記録します。「大きく売れた」馬の回収率が高ければ、直前の動きが使えるサインです（判断には数十レース分が必要）。</p></div>
+      </div>
+      <h3>レースごとの答え合わせ</h3>
+      <div class="rv-list">${preds.map((p) => {
+        const mk = p.horses.find((h) => h.mark === '◎');
+        const top = p.horses.reduce((x, y) => (y.p > x.p ? y : x), p.horses[0]);
+        const fav = p.horses.find((h) => pop(p)[h.no] === 1);
+        const winner = p.result ? p.horses.find((h) => h.no === p.result.win[0]) : null;
+        return `<div class="rv-row">
+          <div class="rv-race"><span class="rg-date">${esc(p.date || '')}</span> ${p.grade ? `<span class="grade-chip ${esc(p.grade.toLowerCase())}">${esc(p.grade)}</span>` : ''}<b>${esc(p.venue || '')}${p.race ? esc(p.race) + 'R' : ''} ${esc(p.name || '')}</b></div>
+          ${p.result ? `<div class="rv-cols"><div><small>◎</small>${horseCell(p, mk)}</div><div><small>モデル</small>${horseCell(p, top)}</div>
+            <div><small>1番人気</small>${horseCell(p, fav)}</div><div><small>勝ち馬</small>${winner ? `${esc(winner.no)} ${esc(winner.name || '')}<small>${pop(p)[winner.no]}人気${p.result.winPay[winner.no] ? '・' + yen(p.result.winPay[winner.no]) : ''}</small>` : '-'}</div></div>`
+            : '<div class="hint">結果待ち（レース後に自動で反映）</div>'}
+          <button class="btn small ghost" data-del="${esc(p.raceId)}" title="この予想を削除">✕</button>
+        </div>`;
+      }).join('')}</div>`;
   }
 
   // ---------- 予想のまとめ（サイド） ----------
@@ -556,7 +726,7 @@
       </div>
       ${buys.length ? `<div class="buy-list"><div class="bl-head">おすすめ単勝（ケリー基準）<span>計 ${yen(total)}</span></div>
         ${buys.map(({ r, bet }) => `<div class="bl-row">${wakuBadge((info[r.no] || {}).waku || wakuOf(r.no, n), r.no)}<span class="bl-name">${esc(r.name)}</span>
-          <b>${yen(bet)}</b><button class="btn small" data-act="rec" data-type="単勝" data-sel="${esc(r.no)}" data-ev="${r.ev.toFixed(2)}" data-bet="${bet}">記録</button></div>`).join('')}
+          <b>${yen(bet)}</b><button class="btn small" data-act="rec" data-type="単勝" data-sel="${esc(r.no)}" data-odds="${r.odds}" data-ev="${r.ev.toFixed(2)}" data-bet="${bet}">記録</button></div>`).join('')}
       </div>` : ''}`;
   }
 
@@ -780,7 +950,7 @@
     }
     rec.picks = []; rec.mode = 'normal';
     $('b-unit').value = 100; $('b-sel').value = ''; $('b-payout').value = '';
-    $('b-conf').value = ''; $('b-ev').value = ''; $('b-memo').value = '';
+    $('b-conf').value = ''; $('b-ev').value = ''; $('b-memo').value = ''; $('b-odds').value = '';
     $('b-form-title').textContent = '馬券を記録';
     $('b-submit').textContent = 'この内容で記録する';
     if (!keepRace) loadRaces();
@@ -817,6 +987,8 @@
       type: rec.type, mode: rec.mode, picks, combos: cmb, points, unit, stake: unit * points, sel,
       payout: payoutRaw === '' ? null : Number(payoutRaw),
       conf: $('b-conf').value, ev: $('b-ev').value === '' ? '' : Number($('b-ev').value), memo: $('b-memo').value.trim(),
+      oddsAtBet: Number($('b-odds').value) > 1 ? Number($('b-odds').value) : '',
+      oddsFinal: old && old.oddsFinal && old.sel === sel ? old.oddsFinal : '',
     };
     if (!bet.name && !bet.raceId) { toast('レースを選ぶか、レース名を入力してください'); return; }
     if (id) state.bets = state.bets.map((b) => (b.id === id ? bet : b));
@@ -834,7 +1006,7 @@
     rec.raceId = b.raceId || '';
     $('b-unit').value = b.unit || b.stake;
     $('b-sel').value = b.picks ? '' : b.sel;
-    $('b-payout').value = b.payout ?? ''; $('b-conf').value = b.conf || ''; $('b-ev').value = b.ev ?? ''; $('b-memo').value = b.memo || '';
+    $('b-payout').value = b.payout ?? ''; $('b-conf').value = b.conf || ''; $('b-ev').value = b.ev ?? ''; $('b-memo').value = b.memo || ''; $('b-odds').value = b.oddsAtBet || '';
     $('b-form-title').textContent = '記録を編集';
     $('b-submit').textContent = '更新する';
     if (!b.raceId) { $('b-manual-race').open = true; if (!b.picks) $('b-sel').value = b.sel; }
@@ -844,7 +1016,7 @@
   }
 
   /** 予想タブの「記録」ボタンから */
-  function prefillBet({ type, sel, ev, stake }) {
+  function prefillBet({ type, sel, ev, stake, odds }) {
     document.querySelector('.tab[data-tab="log"]').click();
     $('b-id').value = '';
     $('b-date').value = d().date || today();
@@ -854,6 +1026,7 @@
     $('b-venue').value = d().venue || ''; $('b-race').value = d().race || ''; $('b-name').value = d().name || '';
     $('b-unit').value = stake || 100;
     $('b-ev').value = ev ? Number(ev).toFixed(2) : '';
+    $('b-odds').value = odds > 1 ? odds : '';
     $('b-form-title').textContent = '馬券を記録';
     $('b-submit').textContent = 'この内容で記録する';
     loadRaces(rec.raceId).then(() => renderForm());
@@ -864,7 +1037,7 @@
   async function autoSettle(quiet) {
     if (!online()) return;
     const pending = state.bets.filter((b) => !S.isSettled(b) && b.raceId && b.combos && b.date <= today());
-    if (!pending.length) { if (!quiet) toast('自動反映できる未確定の馬券はありません'); return; }
+    if (!pending.length) { await fillFinalOdds(); save(); renderLog(); if (!quiet) toast('自動反映できる未確定の馬券はありません'); return; }
     const ids = [...new Set(pending.map((b) => b.raceId))];
     let done = 0, hit = 0;
     if (!quiet) $('b-settle').disabled = true;
@@ -879,6 +1052,7 @@
       } catch (e) { /* 取得できないレースは飛ばす */ }
     }
     $('b-settle').disabled = false;
+    await fillFinalOdds();
     save(); renderLog();
     if (done || !quiet) toast(done ? `${done}件の結果を反映しました（的中 ${hit}件）` : 'まだ結果が確定したレースはありません');
   }
@@ -917,7 +1091,7 @@
             <span class="bet-sel">${esc(b.sel)}${b.points > 1 ? `<small>（${b.points}点×${yen(b.unit)}）</small>` : ''}</span>
             <span class="bet-stake">${yen(b.stake)}</span>
             <span class="bet-res">${win ? `<span class="res win">的中</span> <b>${yen(b.payout)}</b>` : st ? '<span class="res lose">ハズレ</span>' : '<span class="res wait">未確定</span>'}</span>
-            <span class="bet-meta">${b.conf ? `自信${esc(b.conf)}` : ''}${b.ev ? ` 期待値${Number(b.ev).toFixed(2)}` : ''}${b.memo ? ` <span title="${esc(b.memo)}">📝</span>` : ''}</span>
+            <span class="bet-meta">${clvHtml(b)}${b.conf ? `自信${esc(b.conf)}` : ''}${b.ev ? ` 期待値${Number(b.ev).toFixed(2)}` : ''}${b.memo ? ` <span title="${esc(b.memo)}">📝</span>` : ''}</span>
             <span class="bet-act">${st ? '' : '<button class="btn small" data-act="miss" title="払戻0円で確定">ハズレ</button>'}
               <button class="btn small" data-act="edit">編集</button><button class="btn small ghost" data-act="del">✕</button></span>
           </div>`;
@@ -952,6 +1126,7 @@
     $('s-conf').innerHTML = groupTable(S.groupBy(bets, (b) => b.conf && '自信度' + b.conf), ['自信度A', '自信度B', '自信度C']);
     $('s-ev').innerHTML = groupTable(S.groupBy(bets, S.evBand), ['EV 1.0未満', 'EV 1.0〜1.2', 'EV 1.2〜1.5', 'EV 1.5以上']);
     $('s-month').innerHTML = groupTable(S.groupBy(bets, (b) => (b.date || '').slice(0, 7)), null, true);
+    renderClv(bets);
   }
 
   function groupTable(groups, order, desc) {
@@ -1077,6 +1252,15 @@
   // =====================================================
   // オッズ自動取得（server.py 経由）
   // =====================================================
+  function initReview() {
+    $('rv-settle').addEventListener('click', () => settlePreds(false));
+    $('rv-body').addEventListener('click', (e) => {
+      const id = e.target.dataset.del; if (!id) return;
+      if (!confirm('この予想の記録を削除しますか？')) return;
+      delete state.preds[id]; save(); renderReview();
+    });
+  }
+
   // ---------- アプリの更新（GitHubの最新版を取り込む）----------
   const Updater = (() => {
     const btn = $('upd');
@@ -1180,10 +1364,11 @@
         }));
         const scratched = r.horses.filter((h) => !h.odds).map((h) => h.no);
         const meta = raceList.find((x) => x.race_id === rid);
-        Object.assign(d(), { raceId: rid, venue: r.venue, race: r.race, name: r.name || d().name, date: $('f-date').value });
+        Object.assign(d(), { oddsStatus: r.status || '', raceId: rid, venue: r.venue, race: r.race, name: r.name || d().name, date: $('f-date').value });
         if (meta) d().raceMeta = { grade: meta.grade, course: meta.course };
         $('p-venue').value = r.venue; $('p-race').value = r.race; $('p-name').value = d().name; $('p-date').value = d().date;
         save(); renderHorses();
+        api(`/api/oddslog?race_id=${rid}`).then((x) => { d().oddsLog = { raceId: rid, log: x.log || [] }; renderAnalysis(); }).catch(() => {});
         status(`単勝 ${r.updated || ''} 時点${scratched.length ? ` / 取消・オッズなし: ${scratched.join(',')}番` : ''}`, 'ok');
         if (manual) { combos(true); (AIMS[d().aim || 'balance'].types).forEach((t) => t !== d().comboType && combos(true, t)); horses().then(() => trend()); }
       } catch (e) { status('取得失敗: ' + e.message, 'err'); }
@@ -1481,5 +1666,7 @@
   Learn.init();
   initLog();
   initSettings();
+  initReview();
   renderLog();
+  setTimeout(() => settlePreds(true), 3000);  // 起動時に、終わったレースの答え合わせを静かに反映
 })();

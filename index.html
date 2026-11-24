@@ -6,16 +6,17 @@
   <title>競馬ノート</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" />
-  <link rel="stylesheet" href="css/style.css?v=2026.11.24-a" />
+  <link rel="stylesheet" href="css/style.css?v=2026.11.24-b" />
 </head>
 <body>
   <header class="app-header">
-    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.24-a</small></h1>
+    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.24-b</small></h1>
     <button id="upd" class="upd hidden" title="最新版に更新"></button>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="predict">予想</button>
       <button class="tab" data-tab="log">馬券記録</button>
       <button class="tab" data-tab="stats">成績分析</button>
+      <button class="tab" data-tab="review">振り返り</button>
       <button class="tab" data-tab="backtest">検証</button>
       <button class="tab" data-tab="settings">設定</button>
     </nav>
@@ -194,6 +195,7 @@
               <label>払戻額(円)<input type="number" id="b-payout" min="0" step="10" placeholder="空欄＝レース後に自動反映" /></label>
               <label>自信度<select id="b-conf"><option value="">-</option><option>A</option><option>B</option><option>C</option></select></label>
               <label>予想の期待値<input type="number" id="b-ev" step="0.01" placeholder="例: 1.25" /></label>
+              <label>購入時のオッズ<input type="number" id="b-odds" step="0.1" min="1" placeholder="予想タブから記録すると自動" /></label>
               <label class="span-3">メモ（根拠・反省）<input type="text" id="b-memo" /></label>
             </div>
           </details>
@@ -243,6 +245,19 @@
         <div class="card"><h2>予想EV帯別（モデルの検証）</h2><div id="s-ev"></div>
           <p class="hint">EVが高い帯ほど実際の回収率も高ければ、予想モデルが機能しています。</p></div>
         <div class="card span-2"><h2>月別</h2><div id="s-month"></div></div>
+        <div class="card span-2"><h2>オッズの見極め（CLV：購入時 vs 最終オッズ）</h2><div id="s-clv"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= 振り返り ================= -->
+    <section id="tab-review" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <h2>予想の振り返り</h2>
+          <button class="btn small" id="rv-settle">結果を反映</button>
+        </div>
+        <p class="hint">予想タブで取得した重賞は、その時点の印・推定勝率・オッズが自動で保存されます。レース後に結果と突き合わせ、自分の印がオッズに勝っているかを集計します。</p>
+        <div id="rv-body"></div>
       </div>
     </section>
 
@@ -316,9 +331,10 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="js/model.js?v=2026.11.24-a"></script>
-  <script src="js/stats.js?v=2026.11.24-a"></script>
-  <script src="js/bets.js?v=2026.11.24-a"></script>
-  <script src="js/app.js?v=2026.11.24-a"></script>
+  <script src="js/model.js?v=2026.11.24-b"></script>
+  <script src="js/stats.js?v=2026.11.24-b"></script>
+  <script src="js/review.js?v=2026.11.24-b"></script>
+  <script src="js/bets.js?v=2026.11.24-b"></script>
+  <script src="js/app.js?v=2026.11.24-b"></script>
 </body>
 </html>
