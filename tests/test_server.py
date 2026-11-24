@@ -51,3 +51,48 @@ class T(unittest.TestCase):
         self.assertEqual(len(m.odds("202605050811", "wide")["odds"]), n * (n - 1) // 2)
 
 if __name__ == "__main__": unittest.main()
+
+
+class UpdaterTest(unittest.TestCase):
+    def setUp(self):
+        import io, tempfile, zipfile
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, ".cache"))
+        open(os.path.join(self.tmp, ".cache", "keep.txt"), "w").write("data")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("keiba-br/server.py", 'APP_VERSION = "9999.01.01-a"\n')
+            z.writestr("keiba-br/index.html", "<html>new</html>")
+            z.writestr("keiba-br/js/app.js", "// new")
+            z.writestr("keiba-br/.cache/keep.txt", "overwritten?")
+            z.writestr("keiba-br/../evil.txt", "x")
+            z.writestr("keiba-br/tests/t.py", "x")
+        self.zip = buf.getvalue()
+        self.orig = (S.ROOT, S.restart)
+        S.ROOT = self.tmp
+        S.restart = lambda: None
+
+    def tearDown(self):
+        S.ROOT, S.restart = self.orig
+
+    def fake(self, url, timeout=20):
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return b'APP_VERSION = "9999.01.01-a"\n'
+        return self.zip
+
+    def test_apply_replaces_only_app_files(self):
+        u = S.Updater()
+        u._fetch = self.fake
+        r = u.apply()
+        self.assertTrue(r["applied"])
+        self.assertEqual(open(os.path.join(self.tmp, "index.html")).read(), "<html>new</html>")
+        self.assertEqual(open(os.path.join(self.tmp, "js", "app.js")).read(), "// new")
+        self.assertEqual(open(os.path.join(self.tmp, ".cache", "keep.txt")).read(), "data")  # 記録・学習データは触らない
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "tests")))
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(self.tmp), "evil.txt")))
+
+    def test_no_update_when_same_version(self):
+        u = S.Updater()
+        u._fetch = lambda url, timeout=20: ('APP_VERSION = "%s"\n' % S.APP_VERSION).encode()
+        self.assertFalse(u.check()["available"])
+        self.assertFalse(u.apply()["applied"])

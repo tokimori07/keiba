@@ -392,3 +392,6 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
 .aim-record { font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 8px; padding: 6px 8px; margin: 8px 0 0; }
 .predict-side .aim-foot label { margin-top: 0; flex-direction: row; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .aim-foot input.plain { width: 72px; border-color: var(--border); background: var(--surface); display: inline-block; }
+.upd { margin-left: 10px; border: 0; border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 700;
+  background: var(--gold); color: #3a2a00; cursor: pointer; white-space: nowrap; }
+.upd:disabled { opacity: .7; cursor: default; }

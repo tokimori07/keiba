@@ -39,7 +39,15 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.23-c"
+APP_VERSION = "2026.11.24-a"
+
+# ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
+UPDATE_REPO = "tokimori07/keiba"
+UPDATE_BRANCH = "claude/cool-clarke-bs454c"
+# 更新で置き換えるファイル（記録・学習データの .cache などには触れない）
+UPDATE_FILES = ("index.html", "server.py", "analysis.py", "backtest.py", "learn.py", "README.md",
+                "install-mac.command", "uninstall-mac.command", "start.command", "start.bat")
+UPDATE_DIRS = ("css/", "js/")
 MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
@@ -242,6 +250,61 @@ def read_cache(base):
         with open(base + ".html", encoding="utf-8") as f:
             return f.read()
     return None
+
+
+class Updater:
+    """GitHubの最新版と比べ、新しければ取り込んで再起動する"""
+
+    def __init__(self):
+        self.last = None
+
+    def _fetch(self, url, timeout=20):
+        req = urllib.request.Request(url, headers={"User-Agent": "keiba-note-updater"})
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return res.read()
+
+    def check(self):
+        src = self._fetch(f"https://raw.githubusercontent.com/{UPDATE_REPO}/{urllib.parse.quote(UPDATE_BRANCH)}/server.py").decode("utf-8")
+        m = re.search(r'APP_VERSION = "([^"]+)"', src)
+        latest = m.group(1) if m else None
+        self.last = {"current": APP_VERSION, "latest": latest, "available": bool(latest and latest > APP_VERSION)}
+        return self.last
+
+    def apply(self):
+        import io
+        import zipfile
+        info = self.check()
+        if not info["available"]:
+            return {**info, "applied": False}
+        data = self._fetch(f"https://codeload.github.com/{UPDATE_REPO}/zip/refs/heads/{urllib.parse.quote(UPDATE_BRANCH)}", timeout=60)
+        files = {}
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for name in z.namelist():
+                if name.endswith("/") or "/" not in name:
+                    continue
+                rel = name.split("/", 1)[1]  # 先頭の「keiba-ブランチ名/」を外す
+                if ".." in rel.split("/") or rel.startswith("/"):
+                    continue
+                if rel in UPDATE_FILES or (rel.startswith(UPDATE_DIRS) and rel.count("/") == 1):
+                    files[rel] = z.read(name)
+        if "server.py" not in files or "index.html" not in files:
+            raise ValueError("ダウンロードした最新版の中身が不完全です。時間をおいて再度お試しください")
+        for rel, body in files.items():  # いったん全部書き出してから入れ替える（途中で失敗しても壊れにくい）
+            path = os.path.join(ROOT, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".new", "wb") as f:
+                f.write(body)
+        for rel in files:
+            path = os.path.join(ROOT, rel)
+            os.replace(path + ".new", path)
+            if rel.endswith(".command"):
+                os.chmod(path, 0o755)
+        threading.Timer(1.0, restart).start()  # 応答を返してから新しい版で起動し直す
+        return {**info, "applied": True, "files": len(files)}
+
+
+def restart():
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def add_jockeys(report, past, stats):
@@ -597,6 +660,7 @@ class BacktestJob:
 
 def make_handler(provider):
     job = BacktestJob(provider)
+    updater = Updater()
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -627,6 +691,10 @@ def make_handler(provider):
                 return super().do_GET()
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             try:
+                if url.path == "/api/update/check":
+                    return self._json(200, updater.check())
+                if url.path == "/api/update/apply":
+                    return self._json(200, updater.apply())
                 if url.path == "/api/ping":
                     return self._json(200, {"ok": True, "provider": type(provider).__name__, "version": APP_VERSION})
                 if url.path == "/api/races":

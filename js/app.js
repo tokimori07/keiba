@@ -1077,6 +1077,41 @@
   // =====================================================
   // オッズ自動取得（server.py 経由）
   // =====================================================
+  // ---------- アプリの更新（GitHubの最新版を取り込む）----------
+  const Updater = (() => {
+    const btn = $('upd');
+    let latest = null;
+    async function check() {
+      if (location.protocol === 'file:') return;
+      try {
+        const r = await (await fetch('/api/update/check')).json();
+        if (r.available) { latest = r.latest; btn.textContent = `⬆ 新しいバージョン（v${r.latest}）に更新`; btn.classList.remove('hidden'); }
+      } catch (e) { /* オフラインなどは黙って無視 */ }
+    }
+    async function apply() {
+      if (!confirm(`v${latest} に更新します。記録・学習データはそのまま残ります。よろしいですか？`)) return;
+      btn.disabled = true; btn.textContent = '更新中…';
+      try {
+        const r = await (await fetch('/api/update/apply')).json();
+        if (r.error) throw new Error(r.error);
+        btn.textContent = '再起動中…';
+        for (let i = 0; i < 30; i++) {  // 新しい版のサーバーが起動するのを待って再読み込み
+          await new Promise((ok) => setTimeout(ok, 1000));
+          try {
+            const p = await (await fetch('/api/ping', { cache: 'no-store' })).json();
+            if (p.version === r.latest) { location.reload(); return; }
+          } catch (e) { /* 再起動中 */ }
+        }
+        btn.textContent = '更新しました。ページを再読み込みしてください'; btn.disabled = false;
+      } catch (e) {
+        btn.disabled = false; btn.textContent = '⬆ 更新に失敗（クリックで再試行）';
+        toast(`更新に失敗しました: ${e.message}`);
+      }
+    }
+    btn.addEventListener('click', apply);
+    return { check };
+  })();
+
   const Fetch = (() => {
     let timer = null;
     const status = (msg, cls = '') => { $('f-status').textContent = msg; $('f-status').className = 'badge ' + cls; };
@@ -1096,6 +1131,7 @@
         $('f-hint').innerHTML = '自動取得を使うには、ターミナルで <code>python3 server.py</code> を実行し <b>http://localhost:8765</b> を開いてください。';
         return;
       }
+      Updater.check();
       api('/api/ping').then((r) => status(r.provider === 'MockProvider' ? 'モックデータで接続中' : '接続OK', 'ok'))
         .catch(() => status('サーバーに接続できません', 'err'));
       $('f-date').addEventListener('change', listRaces);
