@@ -157,6 +157,7 @@ def parse_past_cell(cell, race_id=""):
     margin = re.search(r"\((-?\d+\.\d)\)\s*$", d7)
     venue = dv[1] if len(dv) > 1 else ""
     first_corner = to_int(passing.group(1).split("-")[0]) if passing else None
+    last_corner = to_int(passing.group(1).rstrip("-").split("-")[-1]) if passing else None
     n = to_int(field.group(1)) if field else None
     cls = race_class(grade.group(1).strip() if grade else "", race_name, venue)
     return {
@@ -176,6 +177,7 @@ def parse_past_cell(cell, race_id=""):
         "time": to_seconds(tm.group(1)) if tm else None,
         "cond": cond.group(1) if cond else "",
         "firstCorner": first_corner,
+        "lastCorner": last_corner,
         "bodyWeight": int(bw.group(1)) if bw else None,
         "gate": int(gate.group(1)) if gate else None,
         "jockeyName": jk_kin.group(1) if jk_kin else "",

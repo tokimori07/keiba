@@ -4,6 +4,7 @@
   const M = window.KeibaModel;
   const S = window.KeibaStats;
   const RV = window.KeibaReview;
+  const PC = window.KeibaPace;
 
   const VENUES = ['東京', '中山', '京都', '阪神', '中京', '新潟', '福島', '小倉', '札幌', '函館', '地方', '海外'];
   const BET_TYPES = ['単勝', '複勝', '枠連', '馬連', 'ワイド', '馬単', '3連複', '3連単', 'WIN5'];
@@ -399,6 +400,7 @@
     renderSummary(res);
     renderAim(res);
     renderBanner();
+    renderPace(byNo);
 
     // ---- 組み合わせ ----
     if (!res) { $('p-combos').innerHTML = '<tr><td colspan="7" class="empty">出走馬を取得すると表示します</td></tr>'; return; }
@@ -693,6 +695,85 @@
           <button class="btn small ghost" data-del="${esc(p.raceId)}" title="この予想を削除">✕</button>
         </div>`;
       }).join('')}</div>`;
+  }
+
+
+  // ---------- 展開予想（図）----------
+  function renderPace(byNo) {
+    const body = $('pace-body'), gauge = $('pace-gauge');
+    const info = d().horseInfo || {};
+    const hs = d().horses.filter((h) => info[h.no] && info[h.no].runs);
+    if (hs.length < 3) { gauge.innerHTML = ''; return; }
+    const course = ((d().raceMeta || {}).course || '').match(/(芝|ダ)(\d{3,4})/);
+    const surface = course ? course[1] : '芝', distance = course ? Number(course[2]) : null;
+    const pr = PC.predict(hs.map((h) => ({ no: Number(h.no), name: h.name, runs: info[h.no].runs })), surface, distance);
+    const n = pr.horses.length;
+    gauge.innerHTML = `<div class="pace-gauge"><span>スロー</span><div class="pg-bar"><i style="left:${pr.paceScore * 100}%"></i></div><span>ハイ</span>
+      <b class="pg-label ${pr.pace === 'ハイ' ? 'hi' : pr.pace === 'スロー' ? 'lo' : ''}">${pr.pace}ペース想定</b></div>`;
+    // ---- 図: 上=序盤（1コーナー）、下=直線（予想）。右が先頭（進行方向）----
+    const Wd = 760, X0 = 46, X1 = 730, R = 12;
+    const col = (no) => WAKU_COLOR[(info[no] || {}).waku || wakuOf(no, n)] || ['#ccc', '#222'];
+    const place = (items, xOf, top) => {  // 重なる馬は下のレーンへ
+      const lanes = [];
+      return items.slice().sort((a, b) => xOf(b) - xOf(a)).map((h) => {
+        const x = xOf(h);
+        let lane = 0;
+        while (lanes[lane] != null && lanes[lane] - x < R * 2 + 2) lane++;
+        lanes[lane] = x;
+        return { h, x, y: top + 18 + Math.min(lane, 4) * (R * 2 + 2) };
+      });
+    };
+    const early = place(pr.horses, (h) => X1 - h.early * (X1 - X0), 26);
+    const fin = place(pr.horses, (h) => X1 - ((h.finishRank - 1) / Math.max(n - 1, 1)) * (X1 - X0), 196);
+    const maxY1 = Math.max(...early.map((p) => p.y)), top2 = 196;
+    const H = Math.max(...fin.map((p) => p.y)) + R + 14;
+    const pos1 = Object.fromEntries(early.map((p) => [p.h.no, p])), pos2 = Object.fromEntries(fin.map((p) => [p.h.no, p]));
+    const leaders = new Set(pr.leaders);
+    const circle = (p, big) => {
+      const [bg, fg] = col(p.h.no);
+      const r = byNo[p.h.no];
+      return `<g class="pc-h" data-no="${p.h.no}"><title>${esc(p.h.no)} ${esc(p.h.name || '')}${p.h.unknown ? '（近走データなし）' : ''}</title>
+        <circle cx="${p.x}" cy="${p.y}" r="${R}" fill="${bg}" stroke="${leaders.has(p.h.no) && !big ? '#e0a800' : '#00000033'}" stroke-width="${leaders.has(p.h.no) && !big ? 3 : 1}" ${p.h.unknown ? 'stroke-dasharray="3 2"' : ''}/>
+        <text x="${p.x}" y="${p.y + 4}" text-anchor="middle" fill="${fg}" font-size="12" font-weight="700">${p.h.no}</text>
+        ${big && r && r.ev >= d().minev / 100 ? `<text x="${p.x + R - 2}" y="${p.y - R + 2}" font-size="10">🔥</text>` : ''}</g>`;
+    };
+    const links = pr.horses.map((h) => {
+      const a = pos1[h.no], b = pos2[h.no], gain = h.earlyRank - h.finishRank;
+      const cls = gain >= 3 ? 'up' : gain <= -3 ? 'down' : '';
+      return `<path class="pc-link ${cls}" d="M${a.x},${a.y + R} C${a.x},${(a.y + b.y) / 2} ${b.x},${(a.y + b.y) / 2} ${b.x},${b.y - R}"/>`;
+    }).join('');
+    const band = (y1, y2, label) => `<rect x="${X0 - R - 6}" y="${y1}" width="${X1 - X0 + 2 * R + 12}" height="${y2 - y1}" rx="12" class="pc-track"/>
+      <text x="${X0 - R - 2}" y="${y1 - 6}" class="pc-label">${label}</text>`;
+    const svg = `<svg viewBox="0 0 ${Wd} ${H}" class="pace-svg" role="img" aria-label="展開予想図">
+      ${band(26, maxY1 + R + 8, '序盤（1コーナー）')}
+      ${band(top2, H - 4, '直線（予想）')}
+      <text x="${X1 + R}" y="18" text-anchor="end" class="pc-label">先頭 →</text>
+      <text x="${X0 - R}" y="${top2 - 6 + 0}" class="pc-label" style="display:none"></text>
+      <text x="${X1 + R}" y="${top2 - 6}" text-anchor="end" class="pc-label">ゴール →</text>
+      ${links}
+      ${early.map((p) => circle(p, false)).join('')}
+      ${fin.map((p) => circle(p, true)).join('')}
+    </svg>`;
+    // ---- 表: 各馬の材料 ----
+    const rows = pr.horses.slice().sort((a, b) => a.earlyRank - b.earlyRank).map((h) => {
+      const [bg] = col(h.no);
+      const edge = h.paceEdge > 0.15 ? '<span class="pc-edge up">▲ 展開利</span>' : h.paceEdge < -0.15 ? '<span class="pc-edge down">▼ 不利</span>' : '';
+      const posLabel = h.unknown ? '-' : h.early <= 0.08 ? '逃げ' : h.early <= 0.3 ? '先行' : h.early <= 0.65 ? '中団' : '後方';
+      return `<tr><td>${wakuBadge((info[h.no] || {}).waku || wakuOf(h.no, n), h.no)}</td><td class="pc-name">${esc(h.name || '')}</td>
+        <td>${posLabel}</td><td class="num">${h.unknown ? '-' : pct(h.nigeRate, 0)}</td>
+        <td class="num">${h.earlyRank}→<b>${h.finishRank}</b></td>
+        <td class="num">${h.speed != null ? h.speed.toFixed(0) : '-'}</td>
+        <td class="num">${h.closing != null ? (h.closing >= 0 ? '+' : '') + h.closing.toFixed(1) + '秒' : h.last3f ? h.last3f.toFixed(1) : '-'}</td>
+        <td>${edge}</td></tr>`;
+    }).join('');
+    body.innerHTML = `
+      <ul class="insights">${pr.notes.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
+      <div class="pace-fig">${svg}</div>
+      <div class="pc-legend"><span><i class="ring"></i>逃げ候補</span><span><i class="ln up"></i>直線で3つ以上順位を上げる</span><span><i class="ln down"></i>3つ以上下げる</span><span>🔥 期待値が基準以上</span><span>点線の丸＝近走データなし</span></div>
+      <details class="pc-more"><summary>各馬の材料（位置取り・逃げ率・タイム指数・上がり）</summary><div class="table-wrap"><table class="mini">
+        <thead><tr><th></th><th>馬名</th><th>位置取り</th><th class="num">逃げ率</th><th class="num">序盤→直線</th><th class="num">タイム指数</th><th class="num">上がり</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+        <p class="hint">位置取り・逃げ率は近5走の1コーナー通過順（新しい走・同じ馬場ほど重視）。タイム指数はコースの基準タイムとの差（1000mあたり0.1秒＝1点）、上がりは基準より何秒速いか。直線の順位はタイム指数・上がり・位置取り×ペースからの目安で、勝率の予想（出馬表）とは別物です。</p></details>`;
   }
 
   // ---------- 予想のまとめ（サイド） ----------

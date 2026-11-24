@@ -40,7 +40,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.24-c"
+APP_VERSION = "2026.11.24-d"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -168,6 +168,7 @@ class NetkeibaProvider:
         past = A.parse_past5(html)
         report = {**info, "horses": A.horses_report(past, info["surface"], info["distance"])}
         add_jockeys(report, past, self.jockey_index())
+        add_speed(report, self.standards())
         return with_model(report, past, date, self.trainer_index(), B.past_lookups(self, {}))
 
     # ---- 騎手の成績（保存済みの過去レース結果から集計）----
@@ -176,18 +177,29 @@ class NetkeibaProvider:
         if getattr(self, "_jk", None) and self._jk[0] == len(files):
             return self._jk[1]
         stats, trainers = A.JockeyStats(), A.JockeyStats()
+        std_src = []
         for f in files:
             if not (f.endswith(".html") or f.endswith(".html.gz")):
                 continue
             html = read_cache(os.path.join(self.CACHE_DIR, f.split(".")[0])) or ""
             if "All_Result_Table" not in html:
                 continue
-            for r in A.parse_result(html)["rows"]:
+            res = A.parse_result(html)
+            for r in res["rows"]:
                 stats.add(r.get("jockeyId"), r.get("jockey"), r["place"])
                 trainers.add(r.get("trainerId"), r.get("trainer"), r["place"])
+            rid = re.search(r"race_id=(\d{12})", html)
+            course = re.search(r'class="RaceData01">.*?(芝|ダ)(\d{3,4})m', html, re.S)
+            if rid and course:  # タイム指数の物差し（コースごとの基準タイム）
+                std_src.append((parse_race_id(rid.group(1))["venue"], course.group(1), int(course.group(2)), res))
         self._jk = (len(files), stats)
         self._tr = trainers
+        self._std = A.build_standards(std_src)
         return stats
+
+    def standards(self):
+        self.jockey_index()
+        return self._std
 
     def trainer_index(self):
         self.jockey_index()
@@ -408,6 +420,14 @@ class OddsRecorder(threading.Thread):
             time.sleep(self.INTERVAL)
 
 
+def add_speed(report, std):
+    """展開予想用: 近走ごとのタイム指数・上がり指数（保存済みの結果から作ったコース基準で計算）"""
+    for h in report["horses"]:
+        for r in h.get("runs", []):
+            r["sp"] = round(A.speed_index(r, std), 1) if A.speed_index(r, std) is not None else None
+            r["up"] = round(A.up_index(r, std), 2) if A.up_index(r, std) is not None else None
+
+
 def add_jockeys(report, past, stats):
     for h in report["horses"]:
         p = past.get(h["no"], {})
@@ -590,12 +610,16 @@ class MockProvider:
         n = len(p)
         for i in range(n):
             runs = []
+            tend = rng.random()  # 脚質の傾向（0=逃げ … 1=追込）
             for k in range(rng.randint(0, 5)):
                 place = max(1, min(16, int(rng.gauss(8 - p[i] * 40, 3))))
+                fc = max(1, min(16, round(tend * 15 + 1 + rng.gauss(0, 1.5))))
                 runs.append({"date": f"2026-{10 - k:02d}-01", "venue": "東京", "race": "モック", "class": rng.choice(["2勝", "3勝", "OP"]),
                              "place": place, "surface": rng.choice(["芝", "芝", "ダ"]), "distance": rng.choice([1400, 1600, 1800]),
                              "field": 16, "pop": place, "margin": round(0 if place == 1 else place * 0.12, 1), "last3f": 34.5,
-                             "style": rng.choice(["逃げ", "先行", "差し", "追込"])})
+                             "style": A.running_style(fc, 16), "firstCorner": fc,
+                             "lastCorner": max(1, min(16, round(fc - (1 - tend) * 2 + rng.gauss(0, 2)))),
+                             "sp": round(rng.gauss(p[i] * 120, 6), 1), "up": round(rng.gauss((tend - 0.4) * 1.2, 0.4), 2)})
             past[i + 1] = {"no": i + 1, "waku": min(8, i * 8 // n + 1), "name": self.NAMES[i], "style": "", "runs": runs,
                            "jockeyId": f"J{(i * 7 + int(race_id[-2:])) % 12:02d}", "jockey": self.JOCKEYS[(i * 7 + int(race_id[-2:])) % 12]}
         report = {**info, "horses": A.horses_report(past, "芝", 1600)}

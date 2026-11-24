@@ -6,11 +6,11 @@
   <title>競馬ノート</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" />
-  <link rel="stylesheet" href="css/style.css?v=2026.11.24-c" />
+  <link rel="stylesheet" href="css/style.css?v=2026.11.24-d" />
 </head>
 <body>
   <header class="app-header">
-    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.24-c</small></h1>
+    <h1><span class="logo">◆</span>競馬ノート <small class="ver">v2026.11.24-d</small></h1>
     <button id="upd" class="upd hidden" title="最新版に更新"></button>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="predict">予想</button>
@@ -88,6 +88,12 @@
                 <button id="p-paste-apply" class="btn primary">取り込む</button>
               </div>
             </details>
+          </div>
+
+          <!-- 展開予想 -->
+          <div class="card" id="pace-card">
+            <div class="card-head"><h2>展開予想</h2><div id="pace-gauge"></div></div>
+            <div id="pace-body"><p class="hint">出走馬を取得すると、近走の位置取り・逃げた割合・タイム指数・上がりから、隊列とペース、直線での伸びを図で予想します。</p></div>
           </div>
 
           <!-- 組み合わせ -->
@@ -331,10 +337,11 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="js/model.js?v=2026.11.24-c"></script>
-  <script src="js/stats.js?v=2026.11.24-c"></script>
-  <script src="js/review.js?v=2026.11.24-c"></script>
-  <script src="js/bets.js?v=2026.11.24-c"></script>
-  <script src="js/app.js?v=2026.11.24-c"></script>
+  <script src="js/model.js?v=2026.11.24-d"></script>
+  <script src="js/stats.js?v=2026.11.24-d"></script>
+  <script src="js/pace.js?v=2026.11.24-d"></script>
+  <script src="js/review.js?v=2026.11.24-d"></script>
+  <script src="js/bets.js?v=2026.11.24-d"></script>
+  <script src="js/app.js?v=2026.11.24-d"></script>
 </body>
 </html>
