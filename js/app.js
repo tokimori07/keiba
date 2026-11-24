@@ -19,7 +19,7 @@
     draft: {
       date: today(), venue: '東京', race: 11, name: '',
       weight: 50, temp: 10, minev: 110, comboType: 'quinella', comboSort: 'p',
-      raceId: '', comboOdds: {}, horseInfo: {}, trend: null, aim: 'balance', aimUnit: 100,
+      raceId: '', comboOdds: {}, horseInfo: {}, trend: null, aim: 'balance', aimUnit: 100, trendFactor: 'prevRace', trendFilters: {},
       method: 'learned', sort: 'no', editMode: false, raceMeta: {}, modelInfo: null,
       horses: [],
     },
@@ -731,6 +731,138 @@
   }
 
   // ---------- レース傾向 ----------
+
+  // ---------- 過去10年の着順傾向の分析 ----------
+  const STYLE_FULL = { 逃: '逃げ', 先: '先行', 差: '差し', 追: '追込' };
+  const band = (v, list) => { for (const [lim, label] of list) if (v <= lim) return label; return null; };
+  const TREND_FACTORS = [
+    { k: 'prevRace', label: '前走レース', free: true, get: (r) => r.prevRace || null },
+    { k: 'prevClass', label: '前走クラス', order: ['G1', 'G2', 'G3', 'OP・L', '3勝以下', '地方・海外'],
+      get: (r) => (!r.prevClass ? null : ['G1', 'G2', 'G3'].includes(r.prevClass) ? r.prevClass : ['OP', 'L'].includes(r.prevClass) ? 'OP・L'
+        : ['地方'].includes(r.prevClass) ? '地方・海外' : r.prevClass === '不明' ? null : '3勝以下') },
+    { k: 'prevPlace', label: '前走着順', order: ['1着', '2〜3着', '4〜5着', '6〜9着', '10着以下'],
+      get: (r) => (r.prevPlace == null ? null : band(r.prevPlace, [[1, '1着'], [3, '2〜3着'], [5, '4〜5着'], [9, '6〜9着'], [99, '10着以下']])) },
+    { k: 'prevPop', label: '前走人気', order: ['1番人気', '2〜3番人気', '4〜6番人気', '7番人気〜'],
+      get: (r) => (r.prevPop == null ? null : band(r.prevPop, [[1, '1番人気'], [3, '2〜3番人気'], [6, '4〜6番人気'], [99, '7番人気〜']])) },
+    { k: 'days', label: '間隔', order: ['中2週以内', '中3〜5週', '中6〜9週', '中10週以上'],
+      get: (r) => (r.days == null ? null : band(r.days, [[20, '中2週以内'], [41, '中3〜5週'], [69, '中6〜9週'], [9999, '中10週以上']])) },
+    { k: 'distChg', label: '距離', order: ['短縮', '同距離', '延長'],
+      get: (r) => (r.distChg == null ? null : r.distChg < 0 ? '短縮' : r.distChg > 0 ? '延長' : '同距離') },
+    { k: 'age', label: '年齢', order: ['2歳', '3歳', '4歳', '5歳', '6歳', '7歳以上'],
+      get: (r) => (r.age ? (r.age >= 7 ? '7歳以上' : r.age + '歳') : null) },
+    { k: 'sex', label: '性別', order: ['牡', '牝', 'セン'], get: (r) => ({ 牡: '牡', 牝: '牝', セ: 'セン' })[r.sex] || null },
+    { k: 'belong', label: '所属', order: ['美浦', '栗東', '地方'], get: (r) => r.belong || null },
+    { k: 'pop', label: '人気', order: ['1番人気', '2〜3番人気', '4〜6番人気', '7〜9番人気', '10番人気〜'],
+      get: (r) => (r.pop == null ? null : band(r.pop, [[1, '1番人気'], [3, '2〜3番人気'], [6, '4〜6番人気'], [9, '7〜9番人気'], [99, '10番人気〜']])) },
+    { k: 'waku', label: '枠', order: ['1枠', '2枠', '3枠', '4枠', '5枠', '6枠', '7枠', '8枠'], get: (r) => (r.waku ? r.waku + '枠' : null) },
+    { k: 'style', label: '脚質', order: ['逃げ', '先行', '差し', '追込'], get: (r) => STYLE_FULL[r.style] || r.style || null },
+    { k: 'sire', label: '父', free: true, get: (r) => r.sire || null },
+    { k: 'jockey', label: '騎手', free: true, get: (r) => (r.jockey || '').replace(/^[▲△☆★◇]/, '') || null },
+    { k: 'kinryo', label: '斤量', free: true, get: (r) => (r.kinryo ? r.kinryo.toFixed(1) + 'kg' : null) },
+  ];
+
+  /** 今年の出走馬（人気・枠は今のオッズ・馬番から） */
+  function trendCurrent(t) {
+    const n = d().horses.length;
+    const pops = Object.fromEntries(d().horses.filter((h) => h.odds > 1).slice().sort((a, b) => a.odds - b.odds).map((h, i) => [Number(h.no), i + 1]));
+    return (t.current || []).map((c) => ({ ...c, pop: pops[c.no] ?? null, waku: c.waku || ((d().horseInfo || {})[c.no] || {}).waku || (n ? wakuOf(c.no, n) : null) }));
+  }
+
+  function tally(rows) {
+    const g = { n: 0, p: [0, 0, 0, 0], winPay: 0, placePay: 0 };
+    rows.forEach((r) => { g.n++; g.p[Math.min(r.place, 4) - 1]++; g.winPay += r.winPay || 0; g.placePay += r.placePay || 0; });
+    g.win = g.n ? g.p[0] / g.n : 0; g.top3 = g.n ? (g.p[0] + g.p[1] + g.p[2]) / g.n : 0;
+    g.winRoi = g.n ? g.winPay / (g.n * 100) : 0; g.placeRoi = g.n ? g.placePay / (g.n * 100) : 0;
+    return g;
+  }
+
+  /** 今年の各馬が過去の傾向にどれだけ合うか（カテゴリの3着内率 ÷ 全体。サンプルが少ないほど平均に寄せる）*/
+  function trendScores(t, cur) {
+    const rows = t.rows || [];
+    const base = tally(rows).top3 || 0.2;
+    return cur.map((c) => {
+      let score = 0; const why = [];
+      TREND_FACTORS.forEach((f) => {
+        const cat = f.get(c); if (!cat) return;
+        const g = tally(rows.filter((r) => f.get(r) === cat));
+        if (g.n < 3) return;
+        const lift = ((g.p[0] + g.p[1] + g.p[2]) + base * 6) / (g.n + 6) / base;
+        score += Math.log(lift);
+        why.push({ f: f.label, cat, lift, g });
+      });
+      why.sort((a, b) => Math.abs(Math.log(b.lift)) - Math.abs(Math.log(a.lift)));
+      return { c, score, why };
+    }).sort((a, b) => b.score - a.score);
+  }
+
+  function trendLab(t) {
+    const rows = t.rows || [];
+    if (!rows.length) return '';
+    const cur = trendCurrent(t);
+    const fk = TREND_FACTORS.find((f) => f.k === d().trendFactor) || TREND_FACTORS[0];
+    const filters = d().trendFilters || {};
+    const active = Object.entries(filters).filter(([k, v]) => v && TREND_FACTORS.find((f) => f.k === k));
+    const fOf = (k) => TREND_FACTORS.find((f) => f.k === k);
+    const pass = (r) => active.every(([k, v]) => fOf(k).get(r) === v);
+    const sub = rows.filter(pass);
+    const curSub = cur.filter(pass);
+    const n = d().horses.length;
+    const hinfo = d().horseInfo || {};
+    const badge = (c) => wakuBadge((hinfo[c.no] || {}).waku || c.waku || wakuOf(c.no, n || 16), c.no);
+    // カテゴリ別の表
+    const cats = new Map();
+    sub.forEach((r) => { const v = fk.get(r); if (v) { if (!cats.has(v)) cats.set(v, []); cats.get(v).push(r); } });
+    curSub.forEach((c) => { const v = fk.get(c); if (v && !cats.has(v)) cats.set(v, []); });
+    let keys = [...cats.keys()];
+    if (fk.order) keys.sort((a, b) => (fk.order.indexOf(a) + 1 || 99) - (fk.order.indexOf(b) + 1 || 99));
+    else keys.sort((a, b) => cats.get(b).length - cats.get(a).length || a.localeCompare(b, 'ja'));
+    const all = tally(sub);
+    const maxRate = Math.max(0.01, ...keys.map((k) => tally(cats.get(k)).top3));
+    const table = keys.map((k) => {
+      const g = tally(cats.get(k));
+      const mine = curSub.filter((c) => fk.get(c) === k);
+      if (fk.free && g.n < 2 && !mine.length) return '';
+      const on = filters[fk.k] === k;
+      const hot = g.n >= 5 && g.top3 >= all.top3 * 1.4, cold = g.n >= 8 && g.top3 <= all.top3 * 0.5;
+      return `<tr data-cat="${esc(k)}" class="tl-row ${on ? 'on' : ''} ${g.n < 5 ? 'thin' : ''}">
+        <td>${esc(k)}${hot ? ' <span class="tl-tag hot">好走</span>' : cold ? ' <span class="tl-tag cold">不振</span>' : ''}</td>
+        <td class="num">${g.p.join('-')}</td>
+        <td class="num">${g.n ? pct(g.win, 0) : '-'}</td>
+        <td class="num"><b>${g.n ? pct(g.top3, 0) : '-'}</b></td>
+        <td><div class="bar"><span style="width:${(g.top3 / maxRate) * 100}%"></span></div></td>
+        <td class="num ${g.winRoi >= 1 ? 'pos' : ''}">${g.n ? pct(g.winRoi, 0) : '-'}</td>
+        <td class="num ${g.placeRoi >= 1 ? 'pos' : ''}">${g.n ? pct(g.placeRoi, 0) : '-'}</td>
+        <td class="tl-cur">${mine.map(badge).join('')}</td>
+      </tr>`;
+    }).join('');
+    // 傾向に合う馬
+    const scores = trendScores({ rows }, cur);
+    const top = scores.slice(0, 5), bottom = scores.slice(-3).reverse();
+    const reason = (s, good) => s.why.filter((w) => (good ? w.lift > 1.15 : w.lift < 0.85)).slice(0, 3)
+      .map((w) => `<span class="tl-why ${good ? 'up' : 'down'}">${esc(w.f)}:${esc(w.cat)} ${pct(w.g.top3, 0)}</span>`).join('');
+    const rankRow = (s, good) => `<div class="tl-rank-row">${badge(s.c)}<span class="tl-name">${esc(s.c.name || '')}</span>
+      <span class="tl-score ${s.score >= 0 ? 'pos' : 'neg'}">${s.score >= 0 ? '+' : ''}${s.score.toFixed(2)}</span><span class="tl-whys">${reason(s, good)}</span></div>`;
+    return `
+      <div class="trend-lab">
+        <h3>着順傾向の分析 <small>過去${new Set(rows.map((r) => r.year)).size}年・${rows.length}頭</small></h3>
+        <div class="tl-factors">${TREND_FACTORS.map((f) => `<button data-tf="${f.k}" class="${f.k === fk.k ? 'on' : ''}">${f.label}${filters[f.k] ? '●' : ''}</button>`).join('')}</div>
+        ${active.length ? `<div class="tl-filter">
+          <span>絞り込み:</span>${active.map(([k, v]) => `<button class="chip" data-unf="${k}">${esc(fOf(k).label)}＝${esc(v)} ✕</button>`).join('')}
+          <span class="tl-filter-res">→ ${all.p.join('-')}（3着内 <b>${pct(all.top3, 0)}</b>・単回収 ${pct(all.winRoi, 0)}・複回収 ${pct(all.placeRoi, 0)}）</span>
+          <span class="tl-filter-cur">今年の該当: ${curSub.length ? curSub.map(badge).join('') : 'なし'}</span>
+          <button class="link" data-unf="*">解除</button></div>` : '<p class="hint">行をクリックすると、その条件で絞り込めます（複数の切り口を組み合わせ可）。</p>'}
+        <div class="table-wrap"><table class="mini tl-table">
+          <thead><tr><th>${esc(fk.label)}</th><th class="num">着度数</th><th class="num">勝率</th><th class="num">3着内率</th><th></th><th class="num">単回収</th><th class="num">複回収</th><th>今年の該当馬</th></tr></thead>
+          <tbody>${table || '<tr><td colspan="8" class="empty">データがありません</td></tr>'}</tbody>
+        </table></div>
+        ${cur.length ? `<div class="tl-rank">
+          <div><h4>傾向に合う馬</h4>${top.map((s) => rankRow(s, true)).join('')}</div>
+          <div><h4>傾向に合わない馬</h4>${bottom.map((s) => rankRow(s, false)).join('')}</div>
+        </div>
+        <p class="hint">各切り口で「その馬が当てはまる区分の3着内率 ÷ 全体の3着内率」を掛け合わせた一致度です（頭数が少ない区分は平均に寄せています）。過去10年は1区分あたりの頭数が少なく偶然も多いので、着度数の母数を見ながら使ってください。</p>` : ''}
+      </div>`;
+  }
+
   function renderTrend() {
     const box = $('t-body');
     const data = d().trend;
@@ -781,7 +913,8 @@
         <tbody>${t.years.map((y) => `<tr><td>${y.year}</td><td>${esc(y.venue)}</td><td>${esc(y.name)}</td><td>${esc(y.winner)}</td>
           <td class="num">${y.winnerPop ?? '-'}</td><td class="num">${y.winnerWaku ?? '-'}</td><td>${esc(y.winnerStyle || '')}</td>
           <td class="num">${y.umaren ? yen(y.umaren) : '-'}</td><td class="num">${y.tan3 ? yen(y.tan3) : '-'}</td></tr>`).join('')}</tbody>
-      </table></div></details>`;
+      </table></div></details>
+      ${trendLab(t)}`;
   }
 
   // =====================================================
@@ -1321,6 +1454,17 @@
       $('f-date').addEventListener('change', listRaces);
       $('f-race').addEventListener('change', () => { if ($('f-race').value && $('f-race').value !== d().raceId) win(true); });
       $('t-load').addEventListener('click', trend);
+      $('t-body').addEventListener('click', (e) => {
+        const el = e.target.closest('[data-tf],[data-cat],[data-unf]'); if (!el) return;
+        if (el.dataset.tf) d().trendFactor = el.dataset.tf;
+        else if (el.dataset.unf) { if (el.dataset.unf === '*') d().trendFilters = {}; else delete (d().trendFilters || {})[el.dataset.unf]; }
+        else if (el.dataset.cat) {
+          const f = d().trendFactor || TREND_FACTORS[0].k;
+          d().trendFilters = d().trendFilters || {};
+          if (d().trendFilters[f] === el.dataset.cat) delete d().trendFilters[f]; else d().trendFilters[f] = el.dataset.cat;
+        }
+        save(); renderTrend();
+      });
       $('f-fetch').addEventListener('click', () => win(true));
       $('f-auto').addEventListener('change', (e) => {
         clearInterval(timer);
@@ -1355,7 +1499,7 @@
       try {
         const r = await api(`/api/odds?race_id=${rid}&type=win`);
         const prev = new Map(d().horses.map((h) => [Number(h.no), h]));
-        if (rid !== d().raceId) { d().comboOdds = {}; d().horseInfo = {}; d().trend = null; d().modelInfo = null; d().raceMeta = {}; prev.clear(); }
+        if (rid !== d().raceId) { d().comboOdds = {}; d().horseInfo = {}; d().trend = null; d().trendFilters = {}; d().modelInfo = null; d().raceMeta = {}; prev.clear(); }
         d().horses = r.horses.filter((h) => h.odds).map((h) => ({
           no: h.no,
           name: h.name || (prev.get(h.no) || {}).name || '',

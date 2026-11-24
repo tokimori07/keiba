@@ -98,6 +98,20 @@ class Payouts(unittest.TestCase):
         self.assertGreater(f["classUp"], 0)                  # OP → G3 は昇級
         self.assertAlmostEqual(f["hidden"], 2 / 16 - 0.1)
 
+    def test_trend_rows_attrs(self):
+        past = A.parse_past5(PAST_ROW)
+        past[5].update({"sex": "牡", "age": 5, "trainer": "栗東・テスト", "kinryo": 57.0})
+        res = {"rows": [{"no": 5, "place": 2, "pop": 3, "waku": 3, "style": "先行", "name": "テストホース"}],
+               "field": 16, "fukusho": {5: 210}, "payout": {"Tansho": 500}}
+        rows = A.trend_rows(past, res, "2026-11-20", 1600)
+        r = rows[0]
+        self.assertEqual((r["age"], r["sex"], r["belong"]), (5, "牡", "栗東"))
+        self.assertEqual(r["prevRace"], "神無月S")
+        self.assertEqual(r["prevPlace"], 2)
+        self.assertEqual(r["distChg"], 200)
+        self.assertEqual(r["days"], 26)
+        self.assertEqual((r["placePay"], r["winPay"]), (210, 0))
+
     def test_parse_payouts(self):
         html = '''<tr class="Tansho"><th>単勝</th><td class="Result"><div><span>15</span></div><div><span></span></div></td>
 <td class="Payout"><span>180円</span></td></tr>

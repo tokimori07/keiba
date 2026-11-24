@@ -40,7 +40,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.24-b"
+APP_VERSION = "2026.11.24-c"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -218,11 +218,30 @@ class NetkeibaProvider:
     def trend(self, race_id, date):
         info = self.race_info(race_id, date)
         found = A.find_past_races(info, A.parse_date(date), self.races)
-        results = []
+        results, rows = [], []
         for r in found["races"]:
             html = self._get(f"{self.BASE}/race/result.html?race_id={r['race_id']}", ttl=86400, persist=True)
-            results.append({**r, "result": A.parse_result(html)})
-        return {**info, "mode": found["mode"], "trend": A.aggregate_trend(results)}
+            res = A.parse_result(html)
+            results.append({**r, "result": res})
+            try:  # 過去の出走馬の前走・年齢などは、そのレースの5走表から（保存して再利用）
+                past = self.past5(r["race_id"])
+            except Exception:
+                past = {}
+            for x in A.trend_rows(past, res, r["date"], r.get("distance")):
+                rows.append({**x, "year": r["year"]})
+        trend = A.aggregate_trend(results)
+        if trend:
+            trend["rows"] = rows
+            trend["current"] = self._current_attrs(race_id, info, date)
+        return {**info, "mode": found["mode"], "trend": trend}
+
+    def _current_attrs(self, race_id, info, date):
+        d = date if "-" in date else f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+        try:
+            past = A.parse_past5(self._get(f"{self.BASE}/race/shutuba_past.html?race_id={race_id}", ttl=1800))
+        except Exception:
+            return []
+        return [{**A.runner_attrs(h, d, info.get("distance")), "waku": h.get("waku")} for h in past.values()]
 
     # ---- 確定オッズ（レース後。確定したら保存して二度と取りに行かない）----
     def final_odds(self, race_id, kind):
@@ -639,7 +658,23 @@ class MockProvider:
             results.append({"year": 2026 - k, "venue": info["venue"], "name": info["name"],
                             "result": {"rows": rows, "field": n, "payout": {"Tan3": rng.choice([3000, 12000, 45000, 98000, 230000]),
                                                                            "Umaren": rng.choice([600, 1800, 5200])}}})
-        return {**info, "mode": "same_race", "trend": A.aggregate_trend(results)}
+        trend = A.aggregate_trend(results)
+        prev = ["天皇賞(秋)", "毎日王冠", "京都大賞典", "オールカマー", "府中牝馬S", "3勝クラス"]
+        cls = {"天皇賞(秋)": "G1", "毎日王冠": "G2", "京都大賞典": "G2", "オールカマー": "G2", "府中牝馬S": "G2", "3勝クラス": "3勝"}
+        def attrs(r, i):
+            pr = rng.choice(prev)
+            return {"sex": rng.choice("牡牡牡牝セ"), "age": rng.choice([3, 4, 4, 5, 5, 6, 7]), "kinryo": rng.choice([55.0, 56.0, 57.0, 58.0]),
+                    "belong": rng.choice(["美浦", "栗東", "栗東"]), "sire": rng.choice(["ディープインパクト", "キズナ", "エピファネイア", "ロードカナロア"]),
+                    "prevRace": pr, "prevClass": cls[pr], "prevPlace": rng.randint(1, 14), "prevPop": rng.randint(1, 14),
+                    "days": rng.choice([14, 21, 28, 35, 49, 70, 120]), "distChg": rng.choice([-400, -200, 0, 0, 200, 400])}
+        trend["rows"] = [{**attrs(r, i), "no": r["no"], "name": r["name"], "place": r["place"], "pop": r["pop"], "waku": r["waku"],
+                          "style": r["style"], "field": x["result"]["field"], "year": x["year"],
+                          "winPay": r["pop"] * 150 if r["place"] == 1 else 0, "placePay": 100 + r["pop"] * 40 if r["place"] <= 3 else 0}
+                         for x in results for i, r in enumerate(x["result"]["rows"])]
+        n = len(self._probs(race_id))
+        trend["current"] = [{**attrs(None, i), "no": i + 1, "name": self.NAMES[i % len(self.NAMES)], "waku": None,
+                             "style": rng.choice(["逃げ", "先行", "差し", "追込"])} for i in range(n)]
+        return {**info, "mode": "same_race", "trend": trend}
 
     def odds(self, race_id, kind):
         info = parse_race_id(race_id)

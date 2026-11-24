@@ -92,6 +92,7 @@ def parse_past5(html):
         style = re.search(r'class="kyakusitu">(.*?)<', row)
         jk = re.search(r'<td class="Jockey">.*?/jockey/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
         sire = re.search(r'class="Horse01[^"]*">(.*?)</div>', row, re.S)
+        barei = re.search(r'class="Barei">\s*([牡牝セ])(\d+)', row)
         bms = re.search(r'class="Horse04">\((.*?)\)</div>', row, re.S)
         kin = re.search(r'<td class="Jockey">.*?</a>\s*<br\s*/?>\s*<span>([\d.]+)</span>', row, re.S)
         tr = re.search(r'class="Horse05">\s*<a[^>]*/trainer/result/recent/(\d+)[^>]*>(.*?)</a>', row, re.S)
@@ -109,6 +110,8 @@ def parse_past5(html):
             "jockeyId": jk.group(1) if jk else "",
             "jockey": strip_tags(jk.group(2)) if jk else "",
             "sire": strip_tags(sire.group(1)) if sire else "",
+            "sex": barei.group(1) if barei else "",
+            "age": int(barei.group(2)) if barei else None,
             "bms": strip_tags(bms.group(1)) if bms else "",
             "kinryo": float(kin.group(1)) if kin else None,
             "trainerId": tr.group(1) if tr else "",
@@ -561,6 +564,45 @@ def horse_features(runs, surface, distance, race_date, ctx=None):
         "wDiff": wd / 10 if wd is not None else None,
         "classUp": class_up,
     }
+
+
+def runner_attrs(entry, race_date, distance):
+    """過去10年の傾向分析用: 1頭の属性（年齢・性別・所属・血統・前走の内容・間隔・距離の変化）"""
+    runs = [r for r in entry.get("runs", []) if r["date"] < race_date]
+    last = runs[0] if runs else None
+    days = None
+    if last:
+        try:
+            days = (date.fromisoformat(race_date) - date.fromisoformat(last["date"])).days
+        except ValueError:
+            days = None
+    trainer = entry.get("trainer") or ""
+    belong = trainer.split("・")[0] if "・" in trainer else ("地方" if trainer else "")
+    return {
+        "no": entry.get("no"), "name": entry.get("name", ""), "sex": entry.get("sex", ""), "age": entry.get("age"),
+        "kinryo": entry.get("kinryo"), "belong": belong, "sire": entry.get("sire", ""), "bms": entry.get("bms", ""),
+        "jockey": entry.get("jockey", ""), "style": entry.get("style", ""),
+        "prevRace": re.sub(r"\s+", "", last["race"]) if last else "", "prevClass": last["class"] if last else "",
+        "prevPlace": last["place"] if last else None, "prevField": last.get("field") if last else None,
+        "prevPop": last.get("pop") if last else None, "prevVenue": last.get("venue", "") if last else "",
+        "days": days, "distChg": (distance - last["distance"]) if last and last.get("distance") and distance else None,
+    }
+
+
+def trend_rows(past, result, race_date, distance):
+    """過去の1レース分: 出走馬ごとの属性＋着順・人気・枠・払戻"""
+    rows = []
+    fuku = result.get("fukusho", {})
+    tan = result.get("payout", {}).get("Tansho")
+    for r in result["rows"]:
+        if not r.get("no") or r.get("place") is None:
+            continue
+        a = runner_attrs(past.get(r["no"], {"no": r["no"], "name": r.get("name", "")}), race_date, distance)
+        a.update({"no": r["no"], "name": r.get("name") or a["name"], "place": r["place"], "pop": r.get("pop"),
+                  "waku": r.get("waku"), "style": r.get("style") or a["style"], "field": result.get("field"),
+                  "winPay": tan if r["place"] == 1 and tan else 0, "placePay": fuku.get(r["no"], 0)})
+        rows.append(a)
+    return rows
 
 
 def current_class(grade, name, venue=""):
