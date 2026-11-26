@@ -17,6 +17,10 @@ bash install-mac.command
 **更新**: 新しいバージョンが出ると、画面上部に「⬆ 新しいバージョンに更新」ボタンが出ます。押すだけで最新版を取り込み、自動で再起動します（記録・学習データはそのまま）。取得元は GitHub の公開リポジトリ（`server.py` の `UPDATE_REPO` / `UPDATE_BRANCH`）です。
 解除は `bash uninstall-mac.command`。
 
+**iPhoneで使う**
+
+設定タブの「📱 iPhoneで使う」→「iPhoneから使えるようにする」を押し、表示されたQRコードをiPhoneのカメラで読み取ります（Macと同じWi-Fiで、Macが起動している間だけ使えます）。Safariの共有ボタン →「ホーム画面に追加」でアプリのように使えます。馬券の記録・予想の振り返り・設定はMac（`.cache/state.json`）に保存され、MacとiPhoneで自動で同期します。合言葉入りのQRコードを読み取った端末だけが接続できます。
+
 **都度起動する場合：ダブルクリック**
 
 - Mac: `start.command` をダブルクリック（初回は右クリック →「開く」）

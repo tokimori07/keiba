@@ -96,3 +96,16 @@ class UpdaterTest(unittest.TestCase):
         u._fetch = lambda url, timeout=20: ('APP_VERSION = "%s"\n' % S.APP_VERSION).encode()
         self.assertFalse(u.check()["available"])
         self.assertFalse(u.apply()["applied"])
+
+
+class StateStoreTest(unittest.TestCase):
+    def test_conflict_detection(self):
+        import tempfile
+        st = S.StateStore(tempfile.mkdtemp())
+        self.assertEqual(st.get()["rev"], 0)
+        ok, cur = st.put(0, {"bets": [1]})
+        self.assertTrue(ok); self.assertEqual(cur["rev"], 1)
+        ok, cur = st.put(0, {"bets": [2]})          # 古い版からの保存は拒否して、最新を返す
+        self.assertFalse(ok); self.assertEqual(cur["data"], {"bets": [1]})
+        ok, cur = st.put(1, {"bets": [1, 2]})
+        self.assertTrue(ok); self.assertEqual(st.get()["data"], {"bets": [1, 2]})

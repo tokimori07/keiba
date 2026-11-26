@@ -15,6 +15,7 @@
   // ---------- 状態 ----------
   const defaultState = () => ({
     bets: [],
+    deleted: {},  // 削除した記録（端末間の同期で復活しないように）
     preds: {},  // 予想の振り返り用（raceId → 予想時の印・推定勝率・オッズ と結果）
     settings: { bankroll: 100000, kelly: 0.25, cap: 10000 },
     draft: {
@@ -40,6 +41,7 @@
   }
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { toast('保存に失敗しました（ブラウザの保存領域を確認）'); }
+    if (typeof Sync !== 'undefined') Sync.push();
   }
 
   // ---------- ユーティリティ ----------
@@ -1055,7 +1057,7 @@
       const b = row && state.bets.find((x) => x.id === row.dataset.id); if (!b) return;
       if (btn.dataset.act === 'edit') editBet(b);
       if (btn.dataset.act === 'del' && confirm('この記録を削除しますか？')) {
-        state.bets = state.bets.filter((x) => x.id !== b.id); save(); renderLog();
+        state.bets = state.bets.filter((x) => x.id !== b.id); (state.deleted = state.deleted || {})[b.id] = Date.now(); save(); renderLog();
       }
       if (btn.dataset.act === 'miss') { b.payout = 0; save(); renderLog(); }
     });
@@ -1382,6 +1384,12 @@
   // =====================================================
   // 設定
   // =====================================================
+  function initSettingsValues() {
+    $('c-bankroll').value = state.settings.bankroll;
+    $('c-kelly').value = String(state.settings.kelly);
+    $('c-cap').value = state.settings.cap;
+  }
+
   function initSettings() {
     $('c-bankroll').value = state.settings.bankroll;
     $('c-kelly').value = String(state.settings.kelly);
@@ -1405,7 +1413,7 @@
         if (!confirm(`${data.bets.length}件の記録を読み込みます。現在のデータは置き換えられます。よろしいですか？`)) return;
         const def = defaultState();
         state = { ...def, ...data, settings: { ...def.settings, ...data.settings }, draft: { ...def.draft, ...data.draft } };
-        save(); location.reload();
+        save(); await Sync.flush(); location.reload();
       } catch (err) { toast('読み込み失敗: ' + err.message); }
       e.target.value = '';
     });
@@ -1413,7 +1421,7 @@
       if (!confirm('サンプルデータを追加します（既存データは残ります）')) return;
       state.bets.push(...sampleBets());
       if (!d().horses.length) d().horses = sampleHorses();
-      save(); location.reload();
+      save(); Sync.flush().then(() => location.reload());
     });
     $('d-reset').addEventListener('click', () => {
       if (!confirm('すべての記録と設定を削除します。元に戻せません。よろしいですか？')) return;
@@ -1471,8 +1479,131 @@
     $('rv-body').addEventListener('click', (e) => {
       const id = e.target.dataset.del; if (!id) return;
       if (!confirm('この予想の記録を削除しますか？')) return;
-      delete state.preds[id]; save(); renderReview();
+      delete state.preds[id]; (state.deleted = state.deleted || {})['pred:' + id] = Date.now(); save(); renderReview();
     });
+  }
+
+
+  // ---------- Mac・iPhone間の同期（記録・振り返り・設定をMacに保存）----------
+  const Sync = (() => {
+    const REV = KEY + '-rev';
+    const SHARED = ['bets', 'preds', 'settings', 'deleted'];  // 予想中の画面（draft）は端末ごと
+    const DIRTY = KEY + '-dirty';
+    let rev = Number(localStorage.getItem(REV) || 0), timer = null, busy = false, ready = false;
+    let dirty = localStorage.getItem(DIRTY) === '1';  // 送れていない変更（再読み込みしても忘れない）
+    const setDirty = (v) => { dirty = v; try { localStorage.setItem(DIRTY, v ? '1' : '0'); } catch (e) { /* 無視 */ } };
+    const shared = () => Object.fromEntries(SHARED.map((k) => [k, state[k]]));
+    const mark = (t, cls) => { const el = $('sync-state'); if (el) { el.textContent = t; el.className = 'hint ' + (cls || ''); } };
+    /** 2つの端末のデータを合わせる（記録は両方の和。削除済みは除く。同じ記録は新しい方）*/
+    function merge(a, b) {
+      const deleted = { ...(a.deleted || {}), ...(b.deleted || {}) };
+      const bets = new Map();
+      [...(b.bets || []), ...(a.bets || [])].forEach((x) => { if (!deleted[x.id]) bets.set(x.id, x); });
+      const preds = { ...(b.preds || {}), ...(a.preds || {}) };
+      Object.keys(preds).forEach((k) => { const o = (b.preds || {})[k]; if (o && o.result && !preds[k].result) preds[k] = o; if (deleted['pred:' + k]) delete preds[k]; });
+      return { bets: [...bets.values()], preds, settings: { ...(b.settings || {}), ...(a.settings || {}) }, deleted };
+    }
+    function apply(data) {
+      SHARED.forEach((k) => { if (data[k] !== undefined) state[k] = data[k]; });
+      localStorage.setItem(KEY, JSON.stringify(state));
+    }
+    async function pull() {
+      if (location.protocol === 'file:') return;
+      try {
+        const r = await (await fetch('/api/state', { cache: 'no-store' })).json();
+        if (!r.data) { ready = true; setDirty(true); return send(); }  // Macにまだ無い → この端末の記録を送る
+        if (r.rev !== rev) {
+          // 初めて同期する端末（rev=0）は、手元の記録を捨てずにMacの記録とまとめる
+          if (rev === 0 && ((state.bets || []).length || Object.keys(state.preds || {}).length)) setDirty(true);
+          const local = dirty ? merge(shared(), r.data) : r.data;
+          apply(local); rev = r.rev; localStorage.setItem(REV, rev);
+          ready = true;
+          if (dirty) send();
+          rerender();
+        } else ready = true;
+        mark('Macと同期済み', 'pos');
+      } catch (e) { ready = true; mark('Macに接続できません（この端末に保存中）', 'neg'); }
+    }
+    async function send() {
+      if (busy || location.protocol === 'file:') return;
+      busy = true;
+      try {
+        const res = await fetch('/api/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rev, data: shared() }) });
+        const r = await res.json();
+        if (res.status === 409) {  // 別の端末が先に保存 → まとめ直して再送
+          apply(merge(shared(), r.data || {})); rev = r.rev; busy = false; rerender(); return send();
+        }
+        if (res.ok) { rev = r.rev; localStorage.setItem(REV, rev); setDirty(false); mark('Macと同期済み', 'pos'); }
+      } catch (e) { mark('Macに接続できません（あとで同期します）', 'neg'); }
+      busy = false;
+    }
+    function push() {
+      setDirty(true);
+      if (!ready) return;
+      clearTimeout(timer); timer = setTimeout(send, 800);
+    }
+    function rerender() { try { renderLog(); renderReview(); if (document.querySelector('#tab-stats.active')) renderStats(); initSettingsValues(); } catch (e) { /* 初期化前 */ } }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });  // 端末を切り替えたら最新を取り込む
+    async function flush() { clearTimeout(timer); if (dirty) await send(); }
+    return { pull, push, merge, flush };
+  })();
+
+  // ---------- iPhoneで使う（設定タブ）----------
+  async function renderLan() {
+    const box = $('lan-body');
+    if (!box || location.protocol === 'file:') { if (box) box.innerHTML = '<p class="hint">アプリをサーバー経由（http://localhost:8765）で開いたときに使えます。</p>'; return; }
+    let r;
+    try { r = await (await fetch('/api/lan/info', { cache: 'no-store' })).json(); } catch (e) { box.innerHTML = '<p class="hint">Macのアプリに接続できません。</p>'; return; }
+    if (!r.local) {
+      box.innerHTML = '<p>この端末はMacの競馬ノートに接続しています。馬券の記録・振り返り・設定はMacと自動で同期されます。</p><p class="hint">ホーム画面に追加すると、アプリのように使えます（Safariの共有ボタン →「ホーム画面に追加」）。</p>';
+      return;
+    }
+    const steps = `<ol class="lan-steps">
+        <li>iPhoneをMacと<b>同じWi-Fi</b>につなぐ</li>
+        <li>iPhoneのカメラで下のQRコードを読み取り、表示されたリンクを開く</li>
+        <li>Safariの共有ボタン →「<b>ホーム画面に追加</b>」でアプリのように使える</li></ol>
+      <p class="hint">Macが起動していて（スリープしていない）、競馬ノートが動いている間だけ使えます。馬券の記録・振り返り・設定はMacとiPhoneで自動で同期されます。初回、Macに「受信接続を許可しますか？」と出たら「許可」を押してください。</p>`;
+    if (!r.lan) {
+      box.innerHTML = `<p>家のWi-Fiにつながっている iPhone から、このアプリを使えるようにします。</p>${steps}
+        <button class="btn primary" id="lan-on">iPhoneから使えるようにする</button>`;
+      $('lan-on').onclick = () => setLan(true);
+      return;
+    }
+    const url = r.urls[0] || '';
+    box.innerHTML = `<div class="lan-grid">
+        <div class="lan-qr" id="lan-qr">${url ? 'QRコードを作成中…' : ''}</div>
+        <div>${steps}
+          ${r.urls.length ? `<p class="hint">QRが読めないときは、iPhoneのSafariで次のURLを開く:</p>${r.urls.map((u) => `<code class="lan-url">${esc(u)}</code>`).join('')}` : '<p class="neg">ネットワークのアドレスが見つかりません。Wi-Fiにつながっているか確認してください。</p>'}
+          <div class="btn-row" style="margin-top:10px"><button class="btn small" id="lan-renew" title="今までのiPhoneは読み取り直しが必要になります">合言葉を作り直す</button>
+          <button class="btn small ghost" id="lan-off">iPhoneからの接続をやめる</button></div>
+        </div></div>
+      ${r.active ? '' : '<p class="neg">設定を反映するため再起動中です。数秒後にこの画面を開き直してください。</p>'}`;
+    $('lan-off').onclick = () => setLan(false);
+    $('lan-renew').onclick = () => { if (confirm('合言葉を作り直します。今までのiPhoneはQRコードを読み取り直す必要があります。')) setLan(true, true); };
+    if (url) drawQr(url);
+  }
+
+  function drawQr(url) {
+    const show = () => {
+      const qr = window.qrcode(0, 'M'); qr.addData(url); qr.make();
+      $('lan-qr').innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+    };
+    if (window.qrcode) return show();
+    const sc = document.createElement('script');
+    sc.src = 'js/qrcode.js?v=1.4.4';  // qrcode-generator 1.4.4（MIT, Kazuhiko Arase）を同梱
+    sc.onload = show;
+    sc.onerror = () => { $('lan-qr').innerHTML = '<p class="hint">QRコードを表示できません。右のURLを使ってください。</p>'; };
+    document.head.appendChild(sc);
+  }
+
+  async function setLan(on, renew) {
+    try { await fetch(`/api/lan/set?on=${on ? 1 : 0}${renew ? '&renew=1' : ''}`); } catch (e) { /* 再起動で切れる */ }
+    $('lan-body').innerHTML = '<p class="hint">設定を反映しています（アプリを再起動中）…</p>';
+    for (let i = 0; i < 20; i++) {
+      await new Promise((ok) => setTimeout(ok, 1000));
+      try { await fetch('/api/ping', { cache: 'no-store' }); break; } catch (e) { /* 再起動中 */ }
+    }
+    renderLan();
   }
 
   // ---------- アプリの更新（GitHubの最新版を取り込む）----------
@@ -1893,5 +2024,7 @@
   initSettings();
   initReview();
   renderLog();
+  Sync.pull();
+  renderLan();
   setTimeout(() => settlePreds(true), 3000);  // 起動時に、終わったレースの答え合わせを静かに反映
 })();

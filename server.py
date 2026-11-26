@@ -31,6 +31,7 @@ import urllib.request
 import webbrowser
 import gzip
 import hashlib
+import base64
 from datetime import date as _date
 from datetime import datetime as _datetime
 
@@ -40,7 +41,7 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.24-d"
+APP_VERSION = "2026.11.26-a"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -49,6 +50,83 @@ UPDATE_BRANCH = "claude/cool-clarke-bs454c"
 UPDATE_FILES = ("index.html", "server.py", "analysis.py", "backtest.py", "learn.py", "README.md",
                 "install-mac.command", "uninstall-mac.command", "start.command", "start.bat")
 UPDATE_DIRS = ("css/", "js/")
+
+# ---- iPhoneなど同じWi-Fiの端末から使う（設定は .cache/config.json）----
+STATIC_FILES = ("/", "/index.html")
+STATIC_DIRS = ("/css/", "/js/")
+
+
+def config_path():
+    return os.path.join(ROOT, ".cache", "config.json")
+
+
+def load_config():
+    try:
+        with open(config_path(), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    if not cfg.get("key"):
+        import secrets
+        cfg["key"] = secrets.token_urlsafe(12)  # 合言葉（QRコードのURLに入れて、iPhoneに覚えさせる）
+        save_config(cfg)
+    return cfg
+
+
+def save_config(cfg):
+    os.makedirs(os.path.dirname(config_path()), exist_ok=True)
+    with open(config_path(), "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+
+
+def lan_addresses():
+    """このMacの家庭内ネットワークでのアドレス"""
+    import socket
+    out = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))  # 実際には送信しない（経路から自分のIPを知るだけ）
+        out.append(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    host = socket.gethostname()
+    if host:
+        out.append(host if host.endswith(".local") else host.split(".")[0] + ".local")
+    return [a for a in out if a and not a.startswith("127.")]
+
+
+class StateStore:
+    """馬券の記録・予想の振り返り・設定をMac側にも保存し、Mac・iPhoneで同じデータを使う"""
+
+    def __init__(self, root):
+        self.path = os.path.join(root, ".cache", "state.json")
+        self.lock = threading.Lock()
+
+    def get(self):
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {"rev": 0, "data": None}
+
+    def put(self, rev, data):
+        with self.lock:
+            cur = self.get()
+            if rev != cur["rev"]:
+                return False, cur  # 他の端末が先に保存した → 画面側でまとめ直してもらう
+            new = {"rev": cur["rev"] + 1, "data": data, "at": int(time.time())}
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(new, f, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            return True, new
+
+
+ICON_180 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAEgUlEQVR42u3dy05TURTG8e0OI3uLGqc9NjyML6CIQoziI/g6gqUwwPhMpqRj5WJwfByYgELBQ7u6z7r8vzgwQWjZ+9e11zqt7YOnH58nQuZlra5rVoHMTWYJCDgIOAg4CDgIOIjOUTYxyRIqBwEHAQcBB2m1IaUjJVQOwihLqBwEHAQcBBwEHAQchFGWUDkIAQdpfqxwrhAqBwEHAQdhlCVUDqKyclA4CJWDgIOAg4CDgENNpi++swhX00riPcEuZbz88cfH6OsTVoPKcV3Gzb+DgxBwNCgbFA9w/N8BPjIyFv4qOOLKwEfcp+ynG413PeoS0XOIMgJHwP2O6SMjAx/gENjjaD5i/b+V6cbJ0j8j0HLRkJbnxSircF9fnUj5GH15TOVARomfBg4/MuL4yMggNKSwA0fZ/fPtIyMDH+FG2enmSUmFoyOHw21GBgmEoxUZLjmu1bxBh5yPZ0ePqBx6c7x5GvbWwRFob8DhTYYnoDnVycEfVVtyvHnqY1W5fL4aH69PXVQOduKvrE/6+PCDQ1yGoA9wOKwZUj6sF4+MDO6kNxyyi36zVNB8JF7sc4cDfJh8T7DjN2dlxpP1Sf/b258yt2RwnTMyzN1tcGiRIXm4WPORY8poq8DY8hG0Ib3vfsf0YQZH661GwCunGRlxzsf749D/dLwaGcKHC0/ZL7uIW7pqhqSPrTP1lYPgwyIObWUjWnOakeHm11wFDo29kH4Z0oeLxl3IKh9M5yZqhqiPc5WVQ9vgakTGSnwwyhIa0oUePduWyoZ88dg+B4cfGb59ZD1nXHU4kPqtxF6+VfzmqsOBnh3RdaxY9CErg2PF3gM6akOqbHyqDgYx/VUHA0bZZstkoXgIy2CUdePDvYyk9rmVlOrqoK/Wh6iMvtotUN2Q6vQRp88NdPlc4aYK6o+IQ3b5lvchfaAwyi453E60+JCUMenzAmO5pfR0ScPIqwzN9ByCC7rANse82Br09RwtbnZl58XJlnC01XwEPFBMVo7yPsLKMHmslPQRWYbVnqOMD57xN/meYOY61mq/lxLvCVaseOz3rAwvsncVHC37kGw1zMpI1q9zrMIHMpzgsHW+gMO8D8qGKxzIWBkOFx84VY0VbUY17vExXsoerDp8qGLKseJzY8DhzYcznTSkyLg1Dj/Lfjjuzt5dlL/R5G4lfVaO4bhLJROoHMnpk7LDz93Z+4tit0VDas8HMsDR2s45lsG0gozYONxvITjU+YhgLsqxIruXQaqR21F2zo7udWc7FyI/h2OFhJYRDkeorZU4VlIdzEdntvNr4e8NtVwRj5XhXqfYd4HDv4+AMmhIkcEoO3fLdzuzD82aj6hLFLpyDHc7Iv8GHBF9RJYBjrsEBJcBjlsdIAMcBBz3LB6UDXDM94GMy/CeYP/6+PQw7mUNKgcBBwEHAQcBB1E2rdCakztGWRaBcKwQcBBwEHCQNhtSOlJC5SCMsoTKQcBBwEHAQcBBwEEYZQmVgxBwkObHCucKoXIQcBBwEEZZQuUg4CDgIOAg4CDgIORafgOBSHib5NgLhwAAAABJRU5ErkJggg=="
+ICON_512 = "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"
+
 MIN_IMPROVEMENT = 0.003  # 予想に使ってよい精度改善の目安（0.3%未満は誤差の範囲とみなす）
 
 VENUES = {
@@ -809,6 +887,7 @@ def make_handler(provider):
     job = BacktestJob(provider)
     updater = Updater()
     oddslog = ODDS_LOG
+    states = StateStore(ROOT)
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -833,12 +912,101 @@ def make_handler(provider):
             self.end_headers()
             self.wfile.write(body)
 
+        def _local(self):
+            return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+        def _authorized(self, q):
+            """Mac本体からは常にOK。他の端末は合言葉（QRコードのURL→Cookie）が必要"""
+            if self._local():
+                return True
+            key = load_config()["key"]
+            cookie = self.headers.get("Cookie", "")
+            return q.get("key") == key or f"kn_key={key}" in cookie
+
+        def _deny(self):
+            body = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                    "<body style='font-family:sans-serif;padding:24px;line-height:1.7'><h2>競馬ノート</h2>"
+                    "<p>このURLは使えません。Macの競馬ノートの「設定」タブ →「iPhoneで使う」のQRコードを、iPhoneのカメラで読み取って開いてください。</p>").encode()
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _bytes(self, body, ctype):
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            url = urllib.parse.urlparse(self.path)
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if not self._authorized(q):
+                return self._deny()
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 30 * 1024 * 1024:
+                return self._json(413, {"error": "データが大きすぎます"})
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return self._json(400, {"error": "JSONが不正です"})
+            if url.path == "/api/state":
+                ok, cur = states.put(body.get("rev"), body.get("data"))
+                return self._json(200 if ok else 409, {"rev": cur["rev"], **({} if ok else {"data": cur["data"]})})
+            return self._json(404, {"error": "not found"})
+
         def do_GET(self):
             url = urllib.parse.urlparse(self.path)
-            if not url.path.startswith("/api/"):
-                return super().do_GET()
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if not self._authorized(q):
+                return self._deny()
+            if q.get("key") and not self._local():  # 合言葉をCookieに保存して、URLから消す
+                self.send_response(302)
+                self.send_header("Set-Cookie", f"kn_key={q['key']}; Max-Age=31536000; Path=/; SameSite=Lax; HttpOnly")
+                self.send_header("Location", url.path or "/")
+                self.end_headers()
+                return
+            if url.path == "/icons/icon-180.png":
+                return self._bytes(base64.b64decode(ICON_180), "image/png")
+            if url.path == "/icons/icon-512.png":
+                return self._bytes(base64.b64decode(ICON_512), "image/png")
+            if url.path == "/manifest.webmanifest":
+                return self._bytes(json.dumps({
+                    "name": "競馬ノート", "short_name": "競馬ノート", "start_url": "/", "display": "standalone",
+                    "background_color": "#f3f5f2", "theme_color": "#157347",
+                    "icons": [{"src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png"},
+                              {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"}]},
+                    ensure_ascii=False).encode(), "application/manifest+json")
+            if not url.path.startswith("/api/"):
+                # 画面のファイルだけを配る（記録などが入った .cache は見せない）
+                if url.path in STATIC_FILES or (url.path.startswith(STATIC_DIRS) and ".." not in url.path):
+                    return super().do_GET()
+                return self._json(404, {"error": "not found"})
             try:
+                if url.path == "/api/state":
+                    return self._json(200, states.get())
+                if url.path == "/api/lan/info":
+                    cfg = load_config()
+                    port = self.server.server_address[1]
+                    return self._json(200, {"lan": bool(cfg.get("lan")), "active": self.server.server_address[0] != "127.0.0.1",
+                                            "local": self._local(),
+                                            "urls": [f"http://{a}:{port}/?key={cfg['key']}" for a in lan_addresses()] if self._local() else []})
+                if url.path == "/api/lan/set":
+                    if not self._local():
+                        return self._json(403, {"error": "Mac本体の画面から操作してください"})
+                    cfg = load_config()
+                    cfg["lan"] = q.get("on") == "1"
+                    if q.get("renew") == "1":
+                        import secrets
+                        cfg["key"] = secrets.token_urlsafe(12)
+                    save_config(cfg)
+                    threading.Timer(0.8, restart).start()  # 受け付ける範囲を変えるため再起動
+                    return self._json(200, {"lan": cfg["lan"], "restarting": True})
+                if url.path == "/api/update/apply" and not self._local():
+                    return self._json(403, {"error": "更新はMac本体の画面から行ってください"})
                 if url.path == "/api/update/check":
                     return self._json(200, updater.check())
                 if url.path == "/api/update/apply":
@@ -937,7 +1105,8 @@ def main():
     provider = MockProvider() if args.mock else NetkeibaProvider()
     url = f"http://localhost:{args.port}"
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(provider))
+        bind = "0.0.0.0" if load_config().get("lan") else "127.0.0.1"  # iPhoneで使う設定なら家のWi-Fiからも受け付ける
+        srv = ThreadingHTTPServer((bind, args.port), make_handler(provider))
         if not args.mock:
             OddsRecorder(provider, ODDS_LOG).start()
     except OSError:
