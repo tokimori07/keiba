@@ -1554,6 +1554,16 @@
     if (!box || location.protocol === 'file:') { if (box) box.innerHTML = '<p class="hint">アプリをサーバー経由（http://localhost:8765）で開いたときに使えます。</p>'; return; }
     let r;
     try { r = await (await fetch('/api/lan/info', { cache: 'no-store' })).json(); } catch (e) { box.innerHTML = '<p class="hint">Macのアプリに接続できません。</p>'; return; }
+    if (r.cloud) {
+      const url = r.urls[0] || '';
+      box.innerHTML = `<div class="lan-grid"><div class="lan-qr" id="lan-qr">QRコードを作成中…</div><div>
+        <p><b>クラウド版</b>で動いています。Macを起動していなくても、外出先からでも使えます。記録・振り返り・設定はクラウドに保存され、どの端末でも同じです。</p>
+        <ol class="lan-steps"><li>他の端末（iPhone・Macなど）のカメラでQRコードを読み取る</li><li>Safariの共有ボタン →「<b>ホーム画面に追加</b>」</li></ol>
+        <p class="hint">このQRコード・URLには合言葉が入っています。他の人に見せないでください。</p>
+        <code class="lan-url">${esc(url)}</code></div></div>`;
+      if (url) drawQr(url);
+      return;
+    }
     if (!r.local) {
       box.innerHTML = '<p>この端末はMacの競馬ノートに接続しています。馬券の記録・振り返り・設定はMacと自動で同期されます。</p><p class="hint">ホーム画面に追加すると、アプリのように使えます（Safariの共有ボタン →「ホーム画面に追加」）。</p>';
       return;
@@ -1567,6 +1577,7 @@
       box.innerHTML = `<p>家のWi-Fiにつながっている iPhone から、このアプリを使えるようにします。</p>${steps}
         <button class="btn primary" id="lan-on">iPhoneから使えるようにする</button>`;
       $('lan-on').onclick = () => setLan(true);
+      renderCloudMove();
       return;
     }
     const url = r.urls[0] || '';
@@ -1579,8 +1590,32 @@
         </div></div>
       ${r.active ? '' : '<p class="neg">設定を反映するため再起動中です。数秒後にこの画面を開き直してください。</p>'}`;
     $('lan-off').onclick = () => setLan(false);
+    renderCloudMove();
     $('lan-renew').onclick = () => { if (confirm('合言葉を作り直します。今までのiPhoneはQRコードを読み取り直す必要があります。')) setLan(true, true); };
     if (url) drawQr(url);
+  }
+
+  /** Macの記録・学習結果をクラウド版へ移す */
+  function renderCloudMove() {
+    const box = $('lan-body');
+    box.insertAdjacentHTML('beforeend', `<div class="cloud-move">
+      <h3>☁️ クラウド版へ移す</h3>
+      <p class="hint">クラウド版を用意したら、クラウドの「設定」に出ている「他の端末で開く」URL（?key=… 付き）を貼り付けて送ります。馬券の記録・予想の振り返り・設定・学習結果がクラウドに移ります（クラウド側の記録とはまとめられます）。</p>
+      <div class="btn-row"><input id="cloud-url" class="plain" placeholder="https://〜/?key=〜" style="flex:1;min-width:0;border-color:var(--border)" />
+      <button class="btn small primary" id="cloud-push">クラウドへ送る</button></div></div>`);
+    $('cloud-push').onclick = async () => {
+      const url = $('cloud-url').value.trim();
+      if (!url) { toast('クラウドのURLを貼り付けてください'); return; }
+      $('cloud-push').disabled = true;
+      try {
+        await Sync.flush();
+        const res = await fetch('/api/cloud/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || res.status);
+        toast(`クラウドへ送りました（記録 ${r.bets}件${r.model ? '・学習結果' : ''}）`);
+      } catch (e) { toast('送れませんでした: ' + e.message); }
+      $('cloud-push').disabled = false;
+    };
   }
 
   function drawQr(url) {

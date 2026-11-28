@@ -1,0 +1,15 @@
+# Render 用の設定（Blueprint）。Render の画面で「New → Blueprint」からこのリポジトリを選ぶと、
+# 永続ディスク付きのクラウド版が作られます。合言葉（KEIBA_KEY）は自動で作られます。
+services:
+  - type: web
+    name: keiba-note
+    runtime: docker
+    plan: starter
+    region: singapore
+    disk:
+      name: keiba-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: KEIBA_KEY
+        generateValue: true

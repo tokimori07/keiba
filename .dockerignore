@@ -1,0 +1,6 @@
+.cache
+.git
+tests
+node_modules
+*.zip
+__pycache__

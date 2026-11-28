@@ -41,7 +41,10 @@ import learn as L
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "2026.11.26-a"
+# クラウドで動かすとき: KEIBA_CLOUD=1、データ（記録・保存ページ・学習結果）は KEIBA_DATA_DIR（永続ディスク）に置く
+CLOUD = os.environ.get("KEIBA_CLOUD") == "1"
+DATA_ROOT = os.environ.get("KEIBA_DATA_DIR") or ROOT
+APP_VERSION = "2026.11.28-a"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -57,7 +60,7 @@ STATIC_DIRS = ("/css/", "/js/")
 
 
 def config_path():
-    return os.path.join(ROOT, ".cache", "config.json")
+    return os.path.join(DATA_ROOT, ".cache", "config.json")
 
 
 def load_config():
@@ -66,6 +69,8 @@ def load_config():
             cfg = json.load(f)
     except (OSError, ValueError):
         cfg = {}
+    if os.environ.get("KEIBA_KEY"):
+        cfg["key"] = os.environ["KEIBA_KEY"]  # クラウドでは環境変数の合言葉を使う
     if not cfg.get("key"):
         import secrets
         cfg["key"] = secrets.token_urlsafe(12)  # 合言葉（QRコードのURLに入れて、iPhoneに覚えさせる）
@@ -94,6 +99,51 @@ def lan_addresses():
     if host:
         out.append(host if host.endswith(".local") else host.split(".")[0] + ".local")
     return [a for a in out if a and not a.startswith("127.")]
+
+
+def push_to_cloud(link, state, model):
+    """MacのデータをクラウドのURL（合言葉付き）へ送る。クラウド側の記録とはまとめる（同じ記録は上書きしない）"""
+    u = urllib.parse.urlparse(link.strip())
+    key = urllib.parse.parse_qs(u.query).get("key", [""])[0]
+    if u.scheme not in ("http", "https") or not u.netloc or not key:
+        raise ValueError("クラウドの画面の「他の端末で開く」URL（?key=… 付き）を貼り付けてください")
+    base = f"{u.scheme}://{u.netloc}"
+    def call(path, data=None):
+        req = urllib.request.Request(f"{base}{path}?key={urllib.parse.quote(key)}", method="POST" if data is not None else "GET",
+                                     data=json.dumps(data, ensure_ascii=False).encode() if data is not None else None,
+                                     headers={"Content-Type": "application/json", "User-Agent": "keiba-note"})
+        def parse(raw):
+            try:
+                return json.loads(raw or b"{}")
+            except ValueError:
+                return {}
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                return res.status, parse(res.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                raise ValueError("合言葉が違います（クラウドの設定画面のURLをそのまま貼り付けてください）")
+            return e.code, parse(e.read())
+    mine = (state or {}).get("data") or {}
+    sent = 0
+    for _ in range(3):
+        code, cur = call("/api/state")
+        if code != 200:
+            raise ValueError("クラウドに接続できません（URLと合言葉を確認）")
+        theirs = cur.get("data") or {}
+        deleted = {**theirs.get("deleted", {}), **mine.get("deleted", {})}
+        bets = {b["id"]: b for b in theirs.get("bets", []) + mine.get("bets", []) if b.get("id") and b["id"] not in deleted}
+        merged = {"bets": list(bets.values()), "preds": {**mine.get("preds", {}), **theirs.get("preds", {})},
+                  "settings": theirs.get("settings") or mine.get("settings") or {}, "deleted": deleted}
+        code, _ = call("/api/state", {"rev": cur.get("rev", 0), "data": merged})
+        if code == 200:
+            sent = len(merged["bets"])
+            break
+    else:
+        raise ValueError("クラウド側で同時に保存が行われています。少し待ってやり直してください")
+    if model:
+        call("/api/model", model)
+    return {"ok": True, "bets": sent, "model": bool(model)}
 
 
 class StateStore:
@@ -178,7 +228,7 @@ class NetkeibaProvider:
         self._cache = {}
 
     # ---- HTTP ----
-    CACHE_DIR = os.path.join(ROOT, ".cache")
+    CACHE_DIR = os.path.join(DATA_ROOT, ".cache")
 
     def _get(self, url, ttl, persist=False):
         """persist=True: 過去レースなど内容が変わらないページはディスクに保存し、二度と取りに行かない"""
@@ -387,6 +437,8 @@ class Updater:
             return res.read()
 
     def check(self):
+        if CLOUD:  # クラウドはGitHubに反映すると自動で入れ替わる
+            return {"current": APP_VERSION, "latest": APP_VERSION, "available": False, "cloud": True}
         src = self._fetch(f"https://raw.githubusercontent.com/{UPDATE_REPO}/{urllib.parse.quote(UPDATE_BRANCH)}/server.py").decode("utf-8")
         m = re.search(r'APP_VERSION = "([^"]+)"', src)
         latest = m.group(1) if m else None
@@ -514,7 +566,7 @@ def add_jockeys(report, past, stats):
 
 def with_model(report, past, date, trainers=None, lookups=None):
     """学習モデルが保存されていれば、各馬の「市場以外の強さ」を付ける（最新オッズとの合成は画面側）"""
-    model = L.load_model(ROOT)
+    model = L.load_model(DATA_ROOT)
     if not model:
         return report
     if any(k not in model.get("beta", {}) for k in L.KEYS):
@@ -880,14 +932,14 @@ class BacktestJob:
         return self.state
 
 
-ODDS_LOG = OddsLog(ROOT)
+ODDS_LOG = OddsLog(DATA_ROOT)
 
 
 def make_handler(provider):
     job = BacktestJob(provider)
     updater = Updater()
     oddslog = ODDS_LOG
-    states = StateStore(ROOT)
+    states = StateStore(DATA_ROOT)
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
@@ -913,6 +965,8 @@ def make_handler(provider):
             self.wfile.write(body)
 
         def _local(self):
+            if CLOUD:  # クラウドでは、すべてインターネット経由（合言葉が必要）
+                return False
             return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
         def _authorized(self, q):
@@ -953,6 +1007,18 @@ def make_handler(provider):
                 body = json.loads(self.rfile.read(n) or b"{}")
             except ValueError:
                 return self._json(400, {"error": "JSONが不正です"})
+            if url.path == "/api/model":  # 学習結果を受け取る（Macからクラウドへ移すとき）
+                if not isinstance(body.get("beta"), dict):
+                    return self._json(400, {"error": "学習結果の形式が不正です"})
+                L.save_model(DATA_ROOT, body)
+                return self._json(200, {"ok": True})
+            if url.path == "/api/cloud/push":  # Macの記録・学習結果をクラウドへ送る（Mac本体の画面から）
+                if not self._local():
+                    return self._json(403, {"error": "Mac本体の画面から操作してください"})
+                try:
+                    return self._json(200, push_to_cloud(body.get("url", ""), states.get(), L.load_model(DATA_ROOT)))
+                except Exception as e:
+                    return self._json(502, {"error": f"クラウドに送れませんでした: {e}"})
             if url.path == "/api/state":
                 ok, cur = states.put(body.get("rev"), body.get("data"))
                 return self._json(200 if ok else 409, {"rev": cur["rev"], **({} if ok else {"data": cur["data"]})})
@@ -963,9 +1029,10 @@ def make_handler(provider):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             if not self._authorized(q):
                 return self._deny()
-            if q.get("key") and not self._local():  # 合言葉をCookieに保存して、URLから消す
+            if q.get("key") and not self._local() and not url.path.startswith("/api/"):  # 画面を開いたときは合言葉をCookieに保存して、URLから消す
                 self.send_response(302)
-                self.send_header("Set-Cookie", f"kn_key={q['key']}; Max-Age=31536000; Path=/; SameSite=Lax; HttpOnly")
+                secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+                self.send_header("Set-Cookie", f"kn_key={q['key']}; Max-Age=31536000; Path=/; SameSite=Lax; HttpOnly{secure}")
                 self.send_header("Location", url.path or "/")
                 self.end_headers()
                 return
@@ -988,6 +1055,11 @@ def make_handler(provider):
             try:
                 if url.path == "/api/state":
                     return self._json(200, states.get())
+                if url.path == "/api/lan/info" and CLOUD:
+                    host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
+                    proto = self.headers.get("X-Forwarded-Proto", "https")
+                    return self._json(200, {"cloud": True, "local": False, "lan": False,
+                                            "urls": [f"{proto}://{host}/?key={load_config()['key']}"]})
                 if url.path == "/api/lan/info":
                     cfg = load_config()
                     port = self.server.server_address[1]
@@ -1042,16 +1114,16 @@ def make_handler(provider):
                         return self._json(400, {"error": "先に学習してください"})
                     if (job.learned.get("improvement") or 0) < MIN_IMPROVEMENT and q.get("force") != "1":
                         return self._json(400, {"error": "検証期間でオッズだけの予想をはっきり上回れていないため、使用をおすすめしません"})
-                    L.save_model(ROOT, job.learned["model"])
+                    L.save_model(DATA_ROOT, job.learned["model"])
                     return self._json(200, {"ok": True, "model": job.learned["model"]})
                 if url.path == "/api/learn/off":
                     try:
-                        os.remove(L.model_path(ROOT))
+                        os.remove(L.model_path(DATA_ROOT))
                     except OSError:
                         pass
                     return self._json(200, {"ok": True})
                 if url.path == "/api/learn/status":
-                    m = L.load_model(ROOT)
+                    m = L.load_model(DATA_ROOT)
                     return self._json(200, {"model": m, "learned": job.learned})
                 if url.path == "/api/backtest/reevaluate":
                     return self._json(200, job.reevaluate(float(q.get("temp", 10))))
@@ -1098,14 +1170,14 @@ def main():
     if sys.version_info < (3, 7):
         sys.exit("Python 3.7 以上が必要です（現在 %s）" % sys.version.split()[0])
     ap = argparse.ArgumentParser(description="競馬ノート ローカルサーバー")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8765))
     ap.add_argument("--mock", action="store_true", help="架空データで動かす")
     ap.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     args = ap.parse_args()
     provider = MockProvider() if args.mock else NetkeibaProvider()
     url = f"http://localhost:{args.port}"
     try:
-        bind = "0.0.0.0" if load_config().get("lan") else "127.0.0.1"  # iPhoneで使う設定なら家のWi-Fiからも受け付ける
+        bind = "0.0.0.0" if CLOUD or load_config().get("lan") else "127.0.0.1"  # iPhoneで使う設定なら家のWi-Fiからも受け付ける
         srv = ThreadingHTTPServer((bind, args.port), make_handler(provider))
         if not args.mock:
             OddsRecorder(provider, ODDS_LOG).start()
@@ -1120,6 +1192,8 @@ def main():
         sys.exit(f"ポート {args.port} が他のアプリに使われています。"
                  f"そのアプリを終了するか、--port 8800 のように別の番号を指定してください"
                  f"（番号を変えると、保存した記録は元の番号のときのURLでしか見えません）")
+    if CLOUD:
+        print(f"競馬ノート（クラウド）: ポート {srv.server_address[1]} で待機中。最初は https://<このアプリのURL>/?key=<合言葉> で開いてください", flush=True)
     url = f"http://localhost:{srv.server_address[1]}"
     print(f"競馬ノート: {url}  （{'モック' if args.mock else 'netkeiba'}モード）")
     print("このウィンドウを閉じるか Ctrl+C で終了します")

@@ -496,3 +496,5 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
   .app-header .ver { display: none; }
   .tabs .tab { padding-left: 10px; padding-right: 10px; }
 }
+.cloud-move { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.cloud-move h3 { font-size: 14px; margin: 0 0 4px; }
