@@ -946,6 +946,35 @@
       </div>`;
   }
 
+
+  /** 過去10年の年ごとの1〜3着（出走馬の詳しい情報があれば、性齢・騎手・前走も） */
+  function yearsHtml(t) {
+    const rows = t.rows || [];
+    const byYear = {};
+    rows.forEach((r) => { if (r.place <= 3) (byYear[r.year] = byYear[r.year] || []).push(r); });
+    const popCls = (p) => (p == null ? '' : p <= 3 ? 'p-fav' : p >= 7 ? 'p-ana' : '');
+    const sexAge = (r) => (r.sex || r.age ? `${r.sex === 'セ' ? 'セ' : r.sex || ''}${r.age || ''}` : '');
+    const prev = (r) => (r.prevRace ? `${esc(r.prevRace)}${r.prevPlace ? ` ${r.prevPlace}着` : ''}` : '');
+    return `<div class="yr-list">${t.years.map((y) => {
+      const top = (byYear[y.year] || []).slice().sort((a, b) => a.place - b.place);
+      const list = top.length ? top : (y.top3 || []);
+      return `<div class="yr">
+        <div class="yr-head"><b>${y.year}年</b><span>${esc(y.venue)} ${esc(y.name)}</span>
+          <span class="yr-pay">${y.umaren ? `馬連 ${yen(y.umaren)}` : ''}${y.tan3 ? ` ・ 3連単 <b>${yen(y.tan3)}</b>` : ''}</span></div>
+        <table class="mini yr-tbl"><tbody>${list.length ? list.map((r) => `<tr>
+          <td class="yr-place p${r.place}">${r.place}着</td>
+          <td>${r.waku ? `<span class="waku-dot" style="background:${(WAKU_COLOR[r.waku] || ['#ccc'])[0]}"></span>` : ''}${esc(r.no ?? '')}</td>
+          <td class="yr-name">${esc(r.name || '')}</td>
+          <td class="num ${popCls(r.pop)}">${r.pop != null ? r.pop + '人気' : '-'}</td>
+          <td>${esc(r.style || '')}</td>
+          <td>${sexAge(r)}</td>
+          <td>${esc((r.jockey || '').replace(/^[▲△☆★◇]/, ''))}</td>
+          <td class="yr-prev">${prev(r)}</td></tr>`).join('')
+          : `<tr><td>1着</td><td colspan="7">${esc(y.winner || '-')}${y.winnerPop ? `（${y.winnerPop}人気）` : ''}</td></tr>`}</tbody></table>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function renderTrend() {
     const box = $('t-body');
     const data = d().trend;
@@ -991,12 +1020,7 @@
              <h3 style="margin-top:10px">馬番 内/外</h3>${bars(t.inout, ['内', '外'], '')}</div>
         <div><h3>人気別</h3>${bars(t.pops, ['1番人気', '2〜3番人気', '4〜6番人気', '7〜9番人気', '10番人気〜'], '人気')}</div>
       </div>
-      <details><summary>年ごとの結果</summary><div class="table-wrap"><table class="mini">
-        <thead><tr><th>年</th><th>競馬場</th><th>レース</th><th>勝ち馬</th><th class="num">人気</th><th class="num">枠</th><th>脚質</th><th class="num">馬連</th><th class="num">3連単</th></tr></thead>
-        <tbody>${t.years.map((y) => `<tr><td>${y.year}</td><td>${esc(y.venue)}</td><td>${esc(y.name)}</td><td>${esc(y.winner)}</td>
-          <td class="num">${y.winnerPop ?? '-'}</td><td class="num">${y.winnerWaku ?? '-'}</td><td>${esc(y.winnerStyle || '')}</td>
-          <td class="num">${y.umaren ? yen(y.umaren) : '-'}</td><td class="num">${y.tan3 ? yen(y.tan3) : '-'}</td></tr>`).join('')}</tbody>
-      </table></div></details>
+      <details class="yr-box" open><summary>年ごとの結果（3着まで）</summary>${yearsHtml(t)}</details>
       ${trendLab(t)}`;
   }
 

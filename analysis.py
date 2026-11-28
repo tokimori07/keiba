@@ -301,6 +301,10 @@ def find_past_races(target_race, target_date, fetch_list, years=10, per_year=3):
             races = fetch_list(d.strftime("%Y%m%d"))
             if named:
                 hit = [r for r in races if normalize_name(r["name"]) == key]
+                if not hit and target_race.get("grade"):
+                    # 略称が年によって違う（例: エリザベス杯／エ女王杯）→ 同じグレード・同じ馬場と距離のレースで探す
+                    hit = [r for r in races if r.get("grade") == target_race["grade"]
+                           and r.get("course") and r.get("course") == target_race.get("course")]
             else:
                 hit = [r for r in races if r["venue"] == target_race["venue"]
                        and r.get("course") == target_race.get("course")]
@@ -438,6 +442,10 @@ def aggregate_trend(results):
             "winner": winner["name"] if winner else "", "winnerPop": winner["pop"] if winner else None,
             "winnerWaku": winner["waku"] if winner else None, "winnerStyle": winner["style"] if winner else None,
             "tan3": res["payout"].get("Tan3"), "umaren": res["payout"].get("Umaren"),
+            "top3": [{"place": r["place"], "name": r.get("name", ""), "no": r["no"], "pop": r.get("pop"),
+                      "waku": r.get("waku"), "style": r.get("style")}
+                     for r in sorted((r for r in res["rows"] if r.get("no") and r.get("place") and r["place"] <= 3),
+                                     key=lambda r: r["place"])],
         })
 
     def rate(d):

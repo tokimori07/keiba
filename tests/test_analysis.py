@@ -112,6 +112,18 @@ class Payouts(unittest.TestCase):
         self.assertEqual(r["days"], 26)
         self.assertEqual((r["placePay"], r["winPay"]), (210, 0))
 
+    def test_find_past_by_grade_and_course(self):
+        target = {"name": "エリザベス杯", "venue": "京都", "course": "芝2200m", "grade": "G1"}
+        def lst(d):
+            if d.startswith("2025"):
+                return [{"race_id": "a", "name": "エリザベス杯", "venue": "京都", "course": "芝2200m", "grade": "G1"}]
+            if d.startswith("2024"):
+                return [{"race_id": "b", "name": "エ女王杯", "venue": "京都", "course": "芝2200m", "grade": "G1"},
+                        {"race_id": "c", "name": "福島記念", "venue": "福島", "course": "芝2000m", "grade": "G3"}]
+            return []
+        found = A.find_past_races(target, date(2026, 11, 15), lst, years=2)
+        self.assertEqual([r["race_id"] for r in found["races"]], ["a", "b"])
+
     def test_parse_payouts(self):
         html = '''<tr class="Tansho"><th>単勝</th><td class="Result"><div><span>15</span></div><div><span></span></div></td>
 <td class="Payout"><span>180円</span></td></tr>

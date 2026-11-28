@@ -498,3 +498,18 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
 }
 .cloud-move { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .cloud-move h3 { font-size: 14px; margin: 0 0 4px; }
+
+/* ---- 過去10年 年ごとの3着まで ---- */
+.yr-box > summary { cursor: pointer; font-weight: 700; margin: 10px 0 6px; }
+.yr-list { display: grid; gap: 8px; }
+.yr { border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; background: var(--surface); overflow-x: auto; }
+.yr-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; margin-bottom: 2px; }
+.yr-pay { margin-left: auto; font-size: 12px; color: var(--muted); }
+.yr-pay b { color: var(--text); }
+.yr-tbl td { padding: 3px 6px; border-bottom: 0; font-size: 12px; }
+.yr-place { font-weight: 700; }
+.yr-place.p1 { color: #b8860b; } .yr-place.p2 { color: #7d8a93; } .yr-place.p3 { color: #a0522d; }
+.yr-name { font-weight: 600; }
+.yr-prev { color: var(--muted); }
+.p-fav { color: var(--accent); font-weight: 600; } .p-ana { color: var(--hot); font-weight: 700; }
+.waku-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; border: 1px solid #0003; vertical-align: middle; }

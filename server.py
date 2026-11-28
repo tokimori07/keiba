@@ -44,7 +44,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # クラウドで動かすとき: KEIBA_CLOUD=1、データ（記録・保存ページ・学習結果）は KEIBA_DATA_DIR（永続ディスク）に置く
 CLOUD = os.environ.get("KEIBA_CLOUD") == "1"
 DATA_ROOT = os.environ.get("KEIBA_DATA_DIR") or ROOT
-APP_VERSION = "2026.11.28-a"
+APP_VERSION = "2026.11.28-b"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
