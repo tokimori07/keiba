@@ -844,6 +844,14 @@
     { k: 'kinryo', label: '斤量', free: true, get: (r) => (r.kinryo ? r.kinryo.toFixed(1) + 'kg' : null) },
   ];
 
+  // ---- 好走歴（近5走のどのレースで好走しているか）----
+  const HIST_MODES = { top3: { label: '3着以内', ok: (x) => x.place != null && x.place <= 3 },
+    win: { label: '1着', ok: (x) => x.place === 1 }, ran: { label: '出走', ok: () => true },
+    beat: { label: '人気より上の着順', ok: (x) => x.place != null && x.pop != null && x.place < x.pop } };
+  const GENERIC_RACE = /(新馬|未勝利|勝クラス|万下|歳以上|歳上)$/;
+  const histRaces = (r, mode) => [...new Set((r.past || []).filter((x) => x.race && !GENERIC_RACE.test(x.race)
+    && !['未勝利', '新馬', '1勝', '2勝', '3勝'].includes(x.cls) && HIST_MODES[mode].ok(x)).map((x) => x.race))];
+
   /** 今年の出走馬（人気・枠は今のオッズ・馬番から） */
   function trendCurrent(t) {
     const n = d().horses.length;
@@ -873,9 +881,50 @@
         score += Math.log(lift);
         why.push({ f: f.label, cat, lift, g });
       });
+      // 好走歴: 近5走で3着以内のレースのうち、本番との相性が最も良いもの
+      let best = null;
+      histRaces(c, 'top3').forEach((race) => {
+        const g = tally(rows.filter((r) => histRaces(r, 'top3').includes(race)));
+        if (g.n < 4) return;
+        const lift = ((g.p[0] + g.p[1] + g.p[2]) + base * 6) / (g.n + 6) / base;
+        if (!best || lift > best.lift) best = { f: '好走歴', cat: race + 'で3着内', lift, g };
+      });
+      if (best) { score += Math.log(best.lift); why.push(best); }
       why.sort((a, b) => Math.abs(Math.log(b.lift)) - Math.abs(Math.log(a.lift)));
       return { c, score, why };
     }).sort((a, b) => b.score - a.score);
+  }
+
+  /** 近5走で好走したレース別の、本番での成績 */
+  function histHtml(rows, sub, curSub, mode, filters, badge) {
+    const map = new Map();
+    sub.forEach((r) => histRaces(r, mode).forEach((race) => { if (!map.has(race)) map.set(race, []); map.get(race).push(r); }));
+    const curBy = new Map();
+    curSub.forEach((c) => histRaces(c, mode).forEach((race) => { if (!curBy.has(race)) curBy.set(race, []); curBy.get(race).push(c); }));
+    curBy.forEach((_, race) => { if (!map.has(race)) map.set(race, []); });
+    const all = tally(sub);
+    const list = [...map.entries()].map(([race, rs]) => ({ race, g: tally(rs), mine: curBy.get(race) || [] }))
+      .filter((x) => x.g.n >= 3 || x.mine.length)
+      .map((x) => ({ ...x, adj: ((x.g.p[0] + x.g.p[1] + x.g.p[2]) + all.top3 * 5) / (x.g.n + 5) }))  // 頭数が少ないほど全体の平均に寄せて並べる
+      .sort((a, b) => (b.g.n >= 3) - (a.g.n >= 3) || b.adj - a.adj || b.g.n - a.g.n);
+    const maxRate = Math.max(0.01, ...list.map((x) => x.g.top3));
+    const sel = filters.hist;
+    return `<div class="tl-hist">
+      <h4>好走歴との相性 <small>近5走で</small>
+        <span class="seg mini-seg">${Object.entries(HIST_MODES).map(([k, m]) => `<button data-hm="${k}" class="${k === mode ? 'on' : ''}">${m.label}</button>`).join('')}</span></h4>
+      <div class="table-wrap"><table class="mini tl-table"><thead><tr><th>近5走で${esc(HIST_MODES[mode].label)}のレース</th><th class="num">本番の着度数</th><th class="num">3着内率</th><th></th><th class="num">単回収</th><th class="num">複回収</th><th>今年の該当馬</th></tr></thead>
+      <tbody>${list.map((x) => {
+        const g = x.g, on = sel && sel.race === x.race && sel.mode === mode;
+        const hot = g.n >= 4 && g.top3 >= all.top3 * 1.5, cold = g.n >= 6 && g.top3 <= all.top3 * 0.5;
+        return `<tr class="tl-row ${on ? 'on' : ''} ${g.n < 5 ? 'thin' : ''}" data-hist="${esc(x.race)}">
+          <td>${esc(x.race)}${hot ? ' <span class="tl-tag hot">好相性</span>' : cold ? ' <span class="tl-tag cold">不振</span>' : ''}</td>
+          <td class="num">${g.n ? g.p.join('-') : '-'}</td><td class="num"><b>${g.n ? pct(g.top3, 0) : '-'}</b></td>
+          <td><div class="bar"><span style="width:${(g.top3 / maxRate) * 100}%"></span></div></td>
+          <td class="num ${g.winRoi >= 1 ? 'pos' : ''}">${g.n ? pct(g.winRoi, 0) : '-'}</td><td class="num ${g.placeRoi >= 1 ? 'pos' : ''}">${g.n ? pct(g.placeRoi, 0) : '-'}</td>
+          <td class="tl-cur">${x.mine.map(badge).join('')}</td></tr>`;
+      }).join('') || '<tr><td colspan="7" class="empty">該当するレースがありません</td></tr>'}</tbody></table></div>
+      <p class="hint">過去10年の出走馬を「近5走でそのレースに${esc(HIST_MODES[mode].label)}だったか」で分け、本番での成績を集計（未勝利・条件戦は除外。3頭以上のレースを表示。頭数の少ないレースは控えめに評価して並べています）。行をクリックで絞り込み。全体の3着内率は ${pct(all.top3, 0)}。</p>
+    </div>`;
   }
 
   function trendLab(t) {
@@ -884,9 +933,12 @@
     const cur = trendCurrent(t);
     const fk = TREND_FACTORS.find((f) => f.k === d().trendFactor) || TREND_FACTORS[0];
     const filters = d().trendFilters || {};
-    const active = Object.entries(filters).filter(([k, v]) => v && TREND_FACTORS.find((f) => f.k === k));
-    const fOf = (k) => TREND_FACTORS.find((f) => f.k === k);
-    const pass = (r) => active.every(([k, v]) => fOf(k).get(r) === v);
+    const histMode = HIST_MODES[d().trendHist] ? d().trendHist : 'top3';
+    const HIST_F = { k: 'hist', label: '好走歴' };
+    const active = Object.entries(filters).filter(([k, v]) => v && (k === 'hist' || TREND_FACTORS.find((f) => f.k === k)));
+    const fOf = (k) => (k === 'hist' ? HIST_F : TREND_FACTORS.find((f) => f.k === k));
+    const pass = (r) => active.every(([k, v]) => (k === 'hist' ? histRaces(r, v.mode).includes(v.race) : fOf(k).get(r) === v));
+    const passNoHist = (r) => active.every(([k, v]) => k === 'hist' || fOf(k).get(r) === v);
     const sub = rows.filter(pass);
     const curSub = cur.filter(pass);
     const n = d().horses.length;
@@ -930,7 +982,7 @@
         <h3>着順傾向の分析 <small>過去${new Set(rows.map((r) => r.year)).size}年・${rows.length}頭</small></h3>
         <div class="tl-factors">${TREND_FACTORS.map((f) => `<button data-tf="${f.k}" class="${f.k === fk.k ? 'on' : ''}">${f.label}${filters[f.k] ? '●' : ''}</button>`).join('')}</div>
         ${active.length ? `<div class="tl-filter">
-          <span>絞り込み:</span>${active.map(([k, v]) => `<button class="chip" data-unf="${k}">${esc(fOf(k).label)}＝${esc(v)} ✕</button>`).join('')}
+          <span>絞り込み:</span>${active.map(([k, v]) => `<button class="chip" data-unf="${k}">${k === 'hist' ? `${esc(v.race)}で${esc(HIST_MODES[v.mode].label)}` : `${esc(fOf(k).label)}＝${esc(v)}`} ✕</button>`).join('')}
           <span class="tl-filter-res">→ ${all.p.join('-')}（3着内 <b>${pct(all.top3, 0)}</b>・単回収 ${pct(all.winRoi, 0)}・複回収 ${pct(all.placeRoi, 0)}）</span>
           <span class="tl-filter-cur">今年の該当: ${curSub.length ? curSub.map(badge).join('') : 'なし'}</span>
           <button class="link" data-unf="*">解除</button></div>` : '<p class="hint">行をクリックすると、その条件で絞り込めます（複数の切り口を組み合わせ可）。</p>'}
@@ -938,6 +990,7 @@
           <thead><tr><th>${esc(fk.label)}</th><th class="num">着度数</th><th class="num">勝率</th><th class="num">3着内率</th><th></th><th class="num">単回収</th><th class="num">複回収</th><th>今年の該当馬</th></tr></thead>
           <tbody>${table || '<tr><td colspan="8" class="empty">データがありません</td></tr>'}</tbody>
         </table></div>
+        ${histHtml(rows, rows.filter(passNoHist), cur.filter(passNoHist), histMode, filters, badge)}
         ${cur.length ? `<div class="tl-rank">
           <div><h4>傾向に合う馬</h4>${top.map((s) => rankRow(s, true)).join('')}</div>
           <div><h4>傾向に合わない馬</h4>${bottom.map((s) => rankRow(s, false)).join('')}</div>
@@ -1726,8 +1779,14 @@
       $('f-race').addEventListener('change', () => { if ($('f-race').value && $('f-race').value !== d().raceId) win(true); });
       $('t-load').addEventListener('click', trend);
       $('t-body').addEventListener('click', (e) => {
-        const el = e.target.closest('[data-tf],[data-cat],[data-unf]'); if (!el) return;
-        if (el.dataset.tf) d().trendFactor = el.dataset.tf;
+        const el = e.target.closest('[data-tf],[data-cat],[data-unf],[data-hm],[data-hist]'); if (!el) return;
+        if (el.dataset.hm) d().trendHist = el.dataset.hm;
+        else if (el.dataset.hist) {
+          d().trendFilters = d().trendFilters || {};
+          const m = d().trendHist || 'top3', cur = d().trendFilters.hist;
+          if (cur && cur.race === el.dataset.hist && cur.mode === m) delete d().trendFilters.hist;
+          else d().trendFilters.hist = { race: el.dataset.hist, mode: m };
+        } else if (el.dataset.tf) d().trendFactor = el.dataset.tf;
         else if (el.dataset.unf) { if (el.dataset.unf === '*') d().trendFilters = {}; else delete (d().trendFilters || {})[el.dataset.unf]; }
         else if (el.dataset.cat) {
           const f = d().trendFactor || TREND_FACTORS[0].k;

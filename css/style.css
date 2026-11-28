@@ -513,3 +513,8 @@ tr.runs > td { background: var(--surface-2); padding: 6px 8px 10px; }
 .yr-prev { color: var(--muted); }
 .p-fav { color: var(--accent); font-weight: 600; } .p-ana { color: var(--hot); font-weight: 700; }
 .waku-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; border: 1px solid #0003; vertical-align: middle; }
+.tl-hist { margin-top: 14px; }
+.tl-hist h4 { font-size: 13px; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tl-hist h4 small { font-weight: 400; color: var(--muted); }
+.mini-seg { margin-left: auto; }
+.mini-seg button { font-size: 11px; padding: 3px 8px; }

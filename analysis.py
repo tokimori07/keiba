@@ -596,6 +596,9 @@ def runner_attrs(entry, race_date, distance):
         "prevPlace": last["place"] if last else None, "prevField": last.get("field") if last else None,
         "prevPop": last.get("pop") if last else None, "prevVenue": last.get("venue", "") if last else "",
         "days": days, "distChg": (distance - last["distance"]) if last and last.get("distance") and distance else None,
+        # 近5走（どのレースで好走しているか）: レース名・クラス・着順・頭数・人気・日付
+        "past": [{"race": re.sub(r"\s+", "", r["race"]), "cls": r["class"], "place": r["place"], "field": r.get("field"),
+                  "pop": r.get("pop"), "date": r["date"]} for r in runs[:5] if r.get("race")],
     }
 
 

@@ -44,7 +44,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # クラウドで動かすとき: KEIBA_CLOUD=1、データ（記録・保存ページ・学習結果）は KEIBA_DATA_DIR（永続ディスク）に置く
 CLOUD = os.environ.get("KEIBA_CLOUD") == "1"
 DATA_ROOT = os.environ.get("KEIBA_DATA_DIR") or ROOT
-APP_VERSION = "2026.11.28-b"
+APP_VERSION = "2026.11.28-c"
 
 # ---- アプリ内の更新（GitHubの公開リポジトリから最新版を取得）----
 UPDATE_REPO = "tokimori07/keiba"
@@ -820,7 +820,9 @@ class MockProvider:
             return {"sex": rng.choice("牡牡牡牝セ"), "age": rng.choice([3, 4, 4, 5, 5, 6, 7]), "kinryo": rng.choice([55.0, 56.0, 57.0, 58.0]),
                     "belong": rng.choice(["美浦", "栗東", "栗東"]), "sire": rng.choice(["ディープインパクト", "キズナ", "エピファネイア", "ロードカナロア"]),
                     "prevRace": pr, "prevClass": cls[pr], "prevPlace": rng.randint(1, 14), "prevPop": rng.randint(1, 14),
-                    "days": rng.choice([14, 21, 28, 35, 49, 70, 120]), "distChg": rng.choice([-400, -200, 0, 0, 200, 400])}
+                    "days": rng.choice([14, 21, 28, 35, 49, 70, 120]), "distChg": rng.choice([-400, -200, 0, 0, 200, 400]),
+                    "past": [{"race": x, "cls": cls[x], "place": rng.randint(1, 12), "field": 16, "pop": rng.randint(1, 12),
+                              "date": "2025-10-01"} for x in rng.sample(prev, 3)]}
         trend["rows"] = [{**attrs(r, i), "no": r["no"], "name": r["name"], "place": r["place"], "pop": r["pop"], "waku": r["waku"],
                           "style": r["style"], "field": x["result"]["field"], "year": x["year"],
                           "winPay": r["pop"] * 150 if r["place"] == 1 else 0, "placePay": 100 + r["pop"] * 40 if r["place"] <= 3 else 0}
